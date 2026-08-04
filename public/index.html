@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Moonlight Cloud — Secure File Storage</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+:root{--bg:#05071a;--surface:#0c1128;--surface2:#111630;--surface3:#161c38;--border:#1e2545;--border2:#2a3360;--accent:#5b8fff;--accent2:#8b5fff;--glow:rgba(91,143,255,0.2);--text:#e8edf8;--muted:#6b7a99;--muted2:#8899bb;--success:#2dd48a;--danger:#ff5c72;--warn:#ffb547;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
+.starfield{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.star{position:absolute;border-radius:50%;background:white;animation:twinkle var(--d,3s) ease-in-out infinite;opacity:var(--o,0.4)}
+@keyframes twinkle{0%,100%{opacity:var(--o,0.4)}50%{opacity:calc(var(--o,0.4)*0.2)}}
+.nebula{position:fixed;border-radius:50%;filter:blur(80px);pointer-events:none;z-index:0}
+.n1{width:600px;height:600px;background:radial-gradient(circle,rgba(91,143,255,0.08) 0%,transparent 70%);top:-200px;left:-100px}
+.n2{width:500px;height:500px;background:radial-gradient(circle,rgba(139,95,255,0.07) 0%,transparent 70%);bottom:-100px;right:-100px}
+
+/* ══ GUEST VIEW ══ */
+#guestView{position:relative;z-index:1;flex:1;display:flex;flex-direction:column}
+.guest-nav{display:flex;align-items:center;justify-content:space-between;padding:16px 32px;border-bottom:1px solid var(--border);background:rgba(5,7,26,0.85);backdrop-filter:blur(16px)}
+.logo{display:flex;align-items:center;gap:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.15rem;color:var(--text);text-decoration:none}
+.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 16px var(--glow)}
+.guest-main{flex:1;display:flex;flex-direction:column;align-items:center;padding:56px 20px 60px}
+.hero{text-align:center;margin-bottom:48px;max-width:600px}
+.hero-eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:0.78rem;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--accent);padding:4px 14px;border:1px solid rgba(91,143,255,0.25);border-radius:100px;background:rgba(91,143,255,0.06);margin-bottom:20px}
+.hero-title{font-family:'Space Grotesk',sans-serif;font-size:clamp(2.2rem,5.5vw,3.5rem);font-weight:700;letter-spacing:-0.04em;line-height:1.1;background:linear-gradient(135deg,#fff 0%,#c8d8ff 40%,var(--accent) 70%,var(--accent2) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:16px}
+.hero-sub{color:var(--muted2);font-size:1rem;line-height:1.6}
+.upload-zone{position:relative;border:2px dashed var(--border2);border-radius:24px;padding:56px 40px;text-align:center;cursor:pointer;transition:all 0.25s;background:rgba(12,17,40,0.7);backdrop-filter:blur(8px);width:100%;max-width:640px;overflow:hidden}
+.upload-zone::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(91,143,255,0.06) 0%,transparent 60%);pointer-events:none}
+.upload-zone:hover,.upload-zone.drag-over{border-color:var(--accent);background:rgba(91,143,255,0.04);box-shadow:0 0 48px rgba(91,143,255,0.12)}
+.upload-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.upload-moon{font-size:3.5rem;display:block;margin-bottom:18px;filter:drop-shadow(0 0 20px rgba(200,216,255,0.4));animation:moonFloat 4s ease-in-out infinite}
+@keyframes moonFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.upload-title{font-family:'Space Grotesk',sans-serif;font-size:1.35rem;font-weight:600;margin-bottom:8px}
+.upload-hint{color:var(--muted);font-size:0.875rem;margin-bottom:6px}
+.upload-limit{font-size:0.78rem;color:var(--muted);margin-bottom:28px}.upload-limit span{color:var(--accent);font-weight:600}
+.upload-cta{display:inline-flex;align-items:center;gap:8px;padding:13px 32px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:white;border-radius:12px;font-weight:600;font-size:0.95rem;box-shadow:0 0 28px var(--glow);pointer-events:none;font-family:'Space Grotesk',sans-serif}
+.phase-card{width:100%;max-width:640px;background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:36px 40px;display:none;backdrop-filter:blur(8px)}
+.phase-card.active{display:block}
+.phase-header{display:flex;align-items:center;gap:14px;margin-bottom:24px}
+.phase-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}
+.phase-icon-scan{background:rgba(255,181,71,0.12);border:1px solid rgba(255,181,71,0.2)}
+.phase-icon-upload{background:rgba(91,143,255,0.12);border:1px solid rgba(91,143,255,0.2)}
+.phase-title{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:1.05rem}
+.phase-sub{color:var(--muted);font-size:0.82rem;margin-top:2px}
+.scan-steps{display:flex;flex-direction:column;gap:10px}
+.scan-step{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:0.875rem;transition:all 0.3s}
+.scan-step.active{border-color:rgba(255,181,71,0.3);background:rgba(255,181,71,0.04)}
+.scan-step.done{border-color:rgba(45,212,138,0.2);background:rgba(45,212,138,0.03)}
+.scan-step.fail{border-color:rgba(255,92,114,0.3);background:rgba(255,92,114,0.05)}
+.step-icon{font-size:1rem;width:24px;text-align:center;flex-shrink:0}
+.step-label{flex:1}.step-status{font-size:0.78rem;color:var(--muted)}
+.step-status.ok{color:var(--success)}.step-status.fail{color:var(--danger)}
+.step-status.spinning::after{content:'';display:inline-block;width:10px;height:10px;border:2px solid var(--border2);border-top-color:var(--warn);border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-left:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.prog-filename{font-weight:600;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}
+.prog-size{color:var(--muted);font-size:0.8rem;margin-bottom:20px}
+.prog-track{background:var(--surface2);border-radius:100px;height:8px;overflow:hidden;margin-bottom:10px}
+.prog-fill{height:100%;border-radius:100px;background:linear-gradient(90deg,var(--accent),var(--accent2));box-shadow:0 0 12px var(--glow);transition:width 0.25s;width:0%}
+.prog-stats{display:flex;justify-content:space-between;font-size:0.8rem;color:var(--muted)}
+.seed-row{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:0.82rem;margin-bottom:8px}
+.seed-label{flex:1;color:var(--muted2)}.seed-val{font-weight:600;font-size:0.85rem}
+.seed-val.accent{color:var(--accent)}.seed-val.success{color:var(--success)}
+.result-card{width:100%;max-width:640px;background:var(--surface);border:1px solid rgba(45,212,138,0.25);border-radius:24px;padding:36px 40px;display:none;box-shadow:0 0 40px rgba(45,212,138,0.06)}
+.result-card.active{display:block}
+.result-banner{display:flex;align-items:center;gap:12px;padding:14px 18px;background:rgba(45,212,138,0.08);border:1px solid rgba(45,212,138,0.2);border-radius:12px;margin-bottom:16px}
+.result-banner-icon{font-size:1.5rem}.result-banner-title{font-family:'Space Grotesk',sans-serif;font-weight:600}
+.result-banner-sub{font-size:0.8rem;color:var(--muted)}
+
+/* Expiry banner */
+.expiry-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;background:rgba(255,181,71,0.07);border:1px solid rgba(255,181,71,0.2);border-radius:10px;margin-bottom:16px;font-size:0.82rem;color:var(--warn)}
+.expiry-banner.hidden{display:none}
+.keep-forever-btn{padding:5px 12px;background:rgba(255,181,71,0.15);border:1px solid rgba(255,181,71,0.4);color:var(--warn);border-radius:6px;font-size:0.78rem;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;transition:all 0.15s;font-weight:600}
+.keep-forever-btn:hover{background:rgba(255,181,71,0.25)}
+.keep-forever-btn.done{background:rgba(45,212,138,0.1);border-color:rgba(45,212,138,0.3);color:var(--success);cursor:default}
+
+.link-row{display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;margin-bottom:6px}
+.link-url{flex:1;color:var(--accent);font-size:0.875rem;word-break:break-all}
+.copy-btn{padding:6px 14px;background:var(--surface3);border:1px solid var(--border2);color:var(--muted2);border-radius:7px;font-size:0.78rem;cursor:pointer;font-family:'Inter',sans-serif;transition:all 0.15s;white-space:nowrap}
+.copy-btn:hover{color:var(--text);border-color:var(--accent)}.copy-btn.copied{color:var(--success);border-color:var(--success)}
+.cli-section{margin-top:20px}.cli-section-label{font-size:0.78rem;color:var(--muted);font-weight:500;margin-bottom:8px}
+.cli-tabs{display:flex;gap:4px;margin-bottom:8px}
+.cli-tab{padding:5px 12px;border-radius:6px;font-size:0.78rem;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Inter',sans-serif;transition:all 0.15s}
+.cli-tab.active{background:var(--surface2);color:var(--text);border-color:var(--accent)}
+.cli-box{background:#03050f;border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-family:'Courier New',monospace;font-size:0.78rem;color:#7dd3fc;word-break:break-all;position:relative;line-height:1.5}
+.cli-copy-btn{position:absolute;top:8px;right:8px;padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:0.7rem;cursor:pointer;font-family:'Inter',sans-serif;transition:all 0.15s}
+.cli-copy-btn:hover{color:var(--text);border-color:var(--accent)}
+.result-actions{display:flex;gap:10px;margin-top:20px}
+.btn-primary{display:inline-flex;align-items:center;gap:7px;padding:11px 22px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:white;border-radius:10px;font-weight:600;font-size:0.875rem;text-decoration:none;cursor:pointer;border:none;font-family:'Inter',sans-serif;box-shadow:0 0 20px var(--glow);transition:all 0.15s}
+.btn-primary:hover{transform:translateY(-1px)}
+.btn{padding:8px 18px;border-radius:8px;font-size:0.85rem;font-weight:500;cursor:pointer;border:none;font-family:'Inter',sans-serif;transition:all 0.15s}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--muted2)}.btn-ghost:hover{border-color:var(--accent);color:var(--text)}
+.info-row{width:100%;max-width:640px;display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}
+.info-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:18px 20px}
+.info-card-label{font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;margin-bottom:10px}
+.quota-track{background:var(--surface2);border-radius:100px;height:5px;overflow:hidden;margin-bottom:8px}
+.quota-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:100px;transition:width 0.5s}
+.quota-text{font-size:0.82rem;color:var(--muted2)}.quota-text b{color:var(--text)}
+.guest-upgrade{display:flex;align-items:center;gap:8px;padding:10px 14px;background:rgba(91,143,255,0.06);border:1px solid rgba(91,143,255,0.18);border-radius:10px;font-size:0.78rem;color:var(--muted2);margin-top:10px}
+.guest-upgrade b{color:var(--accent)}
+
+/* ══ DRIVE VIEW ══ */
+#driveView{display:none;flex:1;flex-direction:column;height:100vh;overflow:hidden;position:relative;z-index:1}
+#driveView.active{display:flex}
+.drive-topbar{display:flex;align-items:center;gap:12px;padding:10px 20px;background:rgba(5,7,26,0.95);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);flex-shrink:0;z-index:50}
+.drive-logo{display:flex;align-items:center;gap:8px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.1rem;min-width:200px}
+.drive-logo-icon{width:30px;height:30px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.drive-search{flex:1;max-width:600px;position:relative}
+.drive-search input{width:100%;padding:10px 16px 10px 42px;background:var(--surface2);border:1px solid var(--border);border-radius:24px;color:var(--text);font-family:'Inter',sans-serif;font-size:0.9rem;outline:none;transition:all 0.2s}
+.drive-search input:focus{border-color:var(--accent);background:var(--surface3)}
+.drive-search input::placeholder{color:var(--muted)}
+.drive-search-icon{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:1rem}
+.drive-topbar-right{display:flex;align-items:center;gap:10px;margin-left:auto}
+.sidebar-toggle{display:none;width:36px;height:36px;flex-shrink:0;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:1.1rem;cursor:pointer;align-items:center;justify-content:center}
+.sidebar-toggle:hover{border-color:var(--accent)}
+.sidebar-scrim{display:none;position:fixed;inset:0;background:rgba(5,7,26,0.6);backdrop-filter:blur(2px);z-index:59}
+.sidebar-scrim.active{display:block}
+.drive-avatar{width:34px;height:34px;border-radius:50%;cursor:pointer;border:2px solid var(--border2);object-fit:cover}
+.drive-avatar-placeholder{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85rem;color:white;flex-shrink:0}
+.drive-user-name{font-size:0.85rem;font-weight:500}
+.drive-layout{display:flex;flex:1;overflow:hidden}
+.drive-sidebar{width:220px;flex-shrink:0;background:rgba(5,7,26,0.7);border-right:1px solid var(--border);padding:16px 12px;display:flex;flex-direction:column;gap:4px;overflow-y:auto}
+.sidebar-new-btn{display:flex;align-items:center;gap:8px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border2);border-radius:12px;cursor:pointer;font-weight:600;font-size:0.875rem;color:var(--text);margin-bottom:12px;transition:all 0.15s;width:100%}
+.sidebar-new-btn:hover{background:var(--surface3);border-color:var(--accent)}
+.sidebar-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;font-size:0.875rem;color:var(--muted2);transition:all 0.15s;text-decoration:none;border:1px solid transparent}
+.sidebar-item:hover{background:var(--surface2);color:var(--text)}
+.sidebar-item.active{background:rgba(91,143,255,0.12);color:var(--accent);border-color:rgba(91,143,255,0.2)}
+.sidebar-item .si-icon{font-size:1rem;width:20px;text-align:center}
+.sidebar-divider{height:1px;background:var(--border);margin:8px 0}
+.sidebar-storage{margin-top:auto;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:12px}
+.sidebar-storage-label{font-size:0.72rem;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
+.sidebar-storage-track{background:var(--surface3);border-radius:100px;height:5px;overflow:hidden;margin-bottom:6px}
+.sidebar-storage-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:100px;transition:width 0.5s}
+.sidebar-storage-text{font-size:0.75rem;color:var(--muted2)}.sidebar-storage-text b{color:var(--text)}
+.drive-content{flex:1;overflow-y:auto;padding:24px;background:transparent}
+.drive-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.drive-section-title{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:1rem;color:var(--muted2)}
+.drive-view-btns{display:flex;gap:4px}
+.view-btn{width:32px;height:32px;border-radius:7px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:0.9rem;transition:all 0.15s}
+.view-btn.active{background:var(--surface2);color:var(--text);border-color:var(--accent)}
+.files-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+.file-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 14px;cursor:pointer;transition:all 0.15s;position:relative}
+.file-card:hover{border-color:var(--border2);background:var(--surface2);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,0.3)}
+.file-card-icon{font-size:2.5rem;text-align:center;display:block;margin-bottom:12px}
+.file-card-name{font-size:0.8rem;font-weight:500;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}
+.file-card-size{font-size:0.7rem;color:var(--muted);text-align:center}
+.file-card-expiry{font-size:0.65rem;color:var(--warn);text-align:center;margin-top:3px}
+.file-card-expiry.forever{color:var(--success)}
+.file-card-menu{position:absolute;top:8px;right:8px;opacity:0;transition:opacity 0.15s}
+.file-card:hover .file-card-menu{opacity:1}
+.file-card-menu-btn{width:26px;height:26px;border-radius:6px;background:var(--surface3);border:1px solid var(--border);color:var(--muted2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:0.8rem}
+.files-list{display:flex;flex-direction:column;gap:6px}
+.file-list-row{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all 0.15s}
+.file-list-row:hover{border-color:var(--border2);background:var(--surface2)}
+.file-list-icon{font-size:1.3rem;width:32px;text-align:center;flex-shrink:0}
+.file-list-name{flex:1;font-size:0.875rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-list-expiry{font-size:0.75rem;color:var(--warn);width:110px;text-align:right;flex-shrink:0}
+.file-list-expiry.forever{color:var(--success)}
+.file-list-size{font-size:0.78rem;color:var(--muted);width:80px;text-align:right;flex-shrink:0}
+.file-list-date{font-size:0.78rem;color:var(--muted);width:90px;text-align:right;flex-shrink:0}
+.file-list-actions{display:flex;gap:6px;flex-shrink:0}
+.icon-btn{width:28px;height:28px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:0.8rem;transition:all 0.15s;text-decoration:none}
+.icon-btn:hover{color:var(--text);border-color:var(--accent)}.icon-btn.del:hover{color:var(--danger);border-color:var(--danger)}
+.upload-fab{position:fixed;bottom:32px;right:32px;z-index:100;display:none}
+.upload-fab.active{display:block}
+.fab-btn{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:white;font-size:1.5rem;cursor:pointer;box-shadow:0 0 24px var(--glow);transition:all 0.15s;display:flex;align-items:center;justify-content:center}
+.fab-btn:hover{transform:scale(1.1);box-shadow:0 0 36px var(--glow)}
+
+/* Settings panel */
+.settings-panel{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:24px}
+.settings-title{font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:1rem;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.setting-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
+.setting-row:last-child{border-bottom:none}
+.setting-label{font-size:0.875rem;font-weight:500;margin-bottom:3px}
+.setting-desc{font-size:0.78rem;color:var(--muted)}
+.toggle{position:relative;width:44px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0;position:absolute}
+.toggle-slider{position:absolute;inset:0;background:var(--surface3);border:1px solid var(--border2);border-radius:100px;cursor:pointer;transition:all 0.3s}
+.toggle-slider::before{content:'';position:absolute;width:18px;height:18px;background:var(--muted);border-radius:50%;top:2px;left:2px;transition:all 0.3s}
+.toggle input:checked + .toggle-slider{background:rgba(45,212,138,0.2);border-color:var(--success)}
+.toggle input:checked + .toggle-slider::before{transform:translateX(20px);background:var(--success)}
+
+/* Upload modal */
+.upload-modal{position:fixed;inset:0;background:rgba(5,7,26,0.85);backdrop-filter:blur(12px);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
+.upload-modal.active{display:flex}
+.upload-modal-card{width:100%;max-width:560px;background:var(--surface);border:1px solid var(--border2);border-radius:24px;padding:36px;animation:modalIn 0.3s ease}
+@keyframes modalIn{from{transform:scale(0.92);opacity:0}to{transform:scale(1);opacity:1}}
+.upload-modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.upload-modal-title{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.2rem}
+.modal-close{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:all 0.15s}
+.modal-close:hover{color:var(--danger);border-color:var(--danger)}
+.drive-upload-zone{border:2px dashed var(--border2);border-radius:16px;padding:40px;text-align:center;cursor:pointer;transition:all 0.2s;position:relative;margin-bottom:16px}
+.drive-upload-zone:hover,.drive-upload-zone.drag-over{border-color:var(--accent);background:rgba(91,143,255,0.04)}
+.drive-upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.modal-overlay{position:fixed;inset:0;background:rgba(5,7,26,0.85);backdrop-filter:blur(12px);z-index:300;display:none;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal{width:100%;max-width:480px;background:var(--surface);border:1px solid var(--border2);border-radius:24px;padding:36px;text-align:center;box-shadow:0 0 80px rgba(0,0,0,0.6);animation:modalIn 0.3s ease}
+.modal-icon{font-size:3.5rem;margin-bottom:16px;display:block}
+.modal-title{font-family:'Space Grotesk',sans-serif;font-size:1.3rem;font-weight:700;margin-bottom:10px}
+.modal-body{color:var(--muted2);font-size:0.9rem;line-height:1.6;margin-bottom:24px}
+.modal-security{border-color:rgba(255,92,114,0.4)}.modal-security .modal-title{color:var(--danger)}
+.modal-upgrade{border-color:rgba(91,143,255,0.3)}
+.upgrade-features{text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px}
+.upgrade-feat{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:0.875rem;color:var(--muted2)}
+.upgrade-feat::before{content:'✦';color:var(--accent);font-size:0.7rem}
+.modal-btn{width:100%;padding:14px;border-radius:12px;font-weight:700;font-size:0.95rem;cursor:pointer;border:none;font-family:'Space Grotesk',sans-serif;transition:all 0.15s;margin-bottom:8px}
+.modal-btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:white;box-shadow:0 0 24px var(--glow)}
+.modal-btn-primary:hover{transform:translateY(-1px)}
+.modal-btn-secondary{background:transparent;border:1px solid var(--border2) !important;color:var(--muted2)}
+.modal-btn-secondary:hover{color:var(--text);border-color:var(--accent) !important}
+.ctx-menu{position:fixed;background:var(--surface2);border:1px solid var(--border2);border-radius:12px;padding:6px;z-index:500;min-width:170px;box-shadow:0 8px 32px rgba(0,0,0,0.4);display:none}
+.ctx-menu.active{display:block}
+.ctx-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:7px;cursor:pointer;font-size:0.85rem;color:var(--muted2);transition:all 0.15s}
+.ctx-item:hover{background:var(--surface3);color:var(--text)}
+.ctx-item.danger{color:var(--danger)}.ctx-item.danger:hover{background:rgba(255,92,114,0.1)}
+.toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;font-size:0.875rem;font-weight:500;background:var(--surface2);border:1px solid var(--border);z-index:2000;transform:translateY(80px);opacity:0;transition:all 0.3s;pointer-events:none}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.success{border-color:var(--success);color:var(--success)}.toast.error{border-color:var(--danger);color:var(--danger)}
+.empty-state{text-align:center;padding:80px 20px;color:var(--muted)}
+.empty-state .ei{font-size:4rem;display:block;margin-bottom:16px;opacity:0.5}
+.empty-state h3{font-family:'Space Grotesk',sans-serif;font-size:1.1rem;margin-bottom:8px;color:var(--muted2)}
+.empty-state p{font-size:0.875rem}
+@media(max-width:768px){
+  .sidebar-toggle{display:flex}
+  .drive-logo{min-width:0;gap:6px;font-size:1rem}
+  .drive-logo-icon{width:26px;height:26px;font-size:14px}
+  .drive-search{max-width:none}
+  .drive-topbar{padding:10px 12px;gap:8px}
+  .drive-user-name{display:none}
+  .drive-sidebar{position:fixed;top:0;left:0;bottom:0;width:250px;max-width:80vw;z-index:60;transform:translateX(-100%);transition:transform 0.25s ease;box-shadow:0 0 40px rgba(0,0,0,0.5)}
+  .drive-sidebar.mobile-open{transform:translateX(0)}
+  .drive-content{padding:16px}
+  .files-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+  .file-list-date,.file-list-size,.file-list-expiry{display:none}
+  .file-list-row{flex-wrap:wrap}
+  .info-row{grid-template-columns:1fr}
+  .result-actions{flex-direction:column}
+  .upload-fab{bottom:20px;right:20px}
+}
+@media(max-width:480px){
+  .drive-search input{font-size:0.85rem;padding:9px 14px 9px 38px}
+  .drive-search-icon{left:12px}
+  .files-grid{grid-template-columns:repeat(auto-fill,minmax(105px,1fr))}
+  .file-card{padding:12px 10px}
+  .upload-modal-card,.modal{padding:24px 20px}
+  .upload-zone{padding:40px 20px}
+  .phase-card,.result-card{padding:24px 20px}
+}
+</style>
+</head>
+<body>
+<div class="starfield" id="sf"></div>
+<div class="nebula n1"></div><div class="nebula n2"></div>
+
+<!-- ══ GUEST VIEW ══ -->
+<div id="guestView">
+  <nav class="guest-nav">
+    <div class="logo"><div class="logo-icon">🌙</div>Moonlight Cloud</div>
+    <div id="guestNavRight"><div id="gsiBtn"></div></div>
+  </nav>
+  <div class="guest-main">
+    <div class="hero">
+      <div class="hero-eyebrow">✦ Secure · Fast · Reliable</div>
+      <h1 class="hero-title">Store and share files instantly</h1>
+      <p class="hero-sub">Upload any file, any size. Secured &amp; delivered fast by our global servers. No tracking.</p>
+    </div>
+    <div id="guestUploadWrap" style="width:100%;max-width:640px">
+      <div class="upload-zone" id="uploadZone">
+        <input type="file" id="fileInput"/>
+        <span class="upload-moon">🌙</span>
+        <div class="upload-title">Drop your file into the moonlight</div>
+        <div class="upload-hint">Any file type · Secured · Fast global delivery</div>
+        <div class="upload-limit" id="limitLabel">Guest limit: <span>20 GB</span> · Sign in for <span>9 TB free</span></div>
+        <div class="upload-cta">⬆ Choose File</div>
+      </div>
+    </div>
+    <div class="phase-card" id="scanCard">
+      <div class="phase-header"><div class="phase-icon phase-icon-scan">🛡</div><div><div class="phase-title">Security Scan</div><div class="phase-sub" id="scanFilename">Checking your file...</div></div></div>
+      <div class="scan-steps">
+        <div class="scan-step" id="step-hash"><div class="step-icon">🔐</div><div class="step-label">Computing SHA-256 hash</div><div class="step-status" id="step-hash-status">Waiting</div></div>
+        <div class="scan-step" id="step-malware"><div class="step-icon">🦠</div><div class="step-label">Threat database check</div><div class="step-status" id="step-malware-status">Waiting</div></div>
+        <div class="scan-step" id="step-tier"><div class="step-icon">📊</div><div class="step-label">Verifying storage quota</div><div class="step-status" id="step-tier-status">Waiting</div></div>
+      </div>
+    </div>
+    <div class="phase-card" id="uploadCard">
+      <div class="phase-header"><div class="phase-icon phase-icon-upload">☁</div><div><div class="phase-title">Uploading to servers</div><div class="phase-sub">Securing your file on our global infrastructure</div></div></div>
+      <div class="prog-filename" id="progName"></div>
+      <div class="prog-size" id="progSize"></div>
+      <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+      <div class="prog-stats"><span id="progPct">0%</span><span id="progSpeed"></span></div>
+      <div style="margin-top:16px" id="seedRows"></div>
+    </div>
+    <div class="result-card" id="resultCard">
+      <div class="result-banner"><div class="result-banner-icon">✅</div><div><div class="result-banner-title">Upload complete!</div><div class="result-banner-sub" id="resultMeta"></div></div></div>
+      <div class="expiry-banner" id="expiryBanner">
+        <span>⏳ This file will be deleted in <b>30 days</b></span>
+        <button class="keep-forever-btn" id="keepForeverBtn" onclick="setKeepForever()">Keep Forever</button>
+      </div>
+      <div class="link-row"><span class="link-url" id="resultUrl"></span><button class="copy-btn" id="copyUrlBtn" onclick="copyShareUrl()">Copy</button></div>
+      <div class="cli-section">
+        <div class="cli-section-label">Download via terminal</div>
+        <div class="cli-tabs">
+          <button class="cli-tab active" onclick="setCliTab('windows',this)">Windows</button>
+          <button class="cli-tab" onclick="setCliTab('mac',this)">Mac</button>
+          <button class="cli-tab" onclick="setCliTab('linux',this)">Linux</button>
+        </div>
+        <div class="cli-box"><span id="cliText"></span><button class="cli-copy-btn" onclick="copyCli()">Copy</button></div>
+      </div>
+      <div class="result-actions">
+        <a id="dlBtn" href="#" class="btn-primary" style="text-decoration:none">⬇ Download</a>
+        <button class="btn btn-ghost" onclick="resetAll()">Upload another</button>
+      </div>
+    </div>
+    <div class="info-row" id="guestInfoRow">
+      <div class="info-card">
+        <div class="info-card-label">Storage quota</div>
+        <div class="quota-track"><div class="quota-fill" id="quotaFill" style="width:0%"></div></div>
+        <div class="quota-text" id="quotaText">Loading...</div>
+        <div class="guest-upgrade" id="guestUpgradeHint" style="display:none">Sign in for <b>9 TB</b> free storage</div>
+      </div>
+      <div class="info-card">
+        <div class="info-card-label">Delivery mode</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:1.1rem">🌍</span><span style="font-size:0.82rem;font-weight:600">Global Server Network</span></div>
+        <div style="font-size:0.78rem;color:var(--muted);line-height:1.5">Files are stored and delivered via our high-speed global server infrastructure.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ DRIVE VIEW ══ -->
+<div id="driveView">
+  <div class="drive-topbar">
+    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+    <div class="drive-logo"><div class="drive-logo-icon">🌙</div>Moonlight Cloud</div>
+    <div class="drive-search"><span class="drive-search-icon">🔍</span><input type="text" placeholder="Search files..." id="searchInput" oninput="filterFiles()"/></div>
+    <div class="drive-topbar-right">
+      <div id="driveAvatarWrap"></div>
+      <span class="drive-user-name" id="driveUserName"></span>
+      <button class="btn btn-ghost" style="font-size:0.8rem" onclick="signOut()">Sign out</button>
+    </div>
+  </div>
+  <div class="drive-layout">
+    <div class="sidebar-scrim" id="sidebarScrim" onclick="toggleSidebar(false)"></div>
+    <div class="drive-sidebar" id="driveSidebar">
+      <button class="sidebar-new-btn" onclick="openUploadModal();if(window.innerWidth<=768)toggleSidebar(false)"><span>＋</span> New Upload</button>
+      <a class="sidebar-item active" id="sb-myfiles" onclick="setSection('myfiles')"><span class="si-icon">🗂</span> My Files</a>
+      <a class="sidebar-item" id="sb-recent" onclick="setSection('recent')"><span class="si-icon">🕐</span> Recent</a>
+      <a class="sidebar-item" id="sb-shared" onclick="setSection('shared')"><span class="si-icon">🔗</span> Shared Links</a>
+      <div class="sidebar-divider"></div>
+      <a class="sidebar-item" id="sb-images" onclick="setSection('images')"><span class="si-icon">🖼</span> Images</a>
+      <a class="sidebar-item" id="sb-videos" onclick="setSection('videos')"><span class="si-icon">🎬</span> Videos</a>
+      <a class="sidebar-item" id="sb-docs" onclick="setSection('docs')"><span class="si-icon">📄</span> Documents</a>
+      <a class="sidebar-item" id="sb-archives" onclick="setSection('archives')"><span class="si-icon">📦</span> Archives</a>
+      <div class="sidebar-divider"></div>
+      <a class="sidebar-item" id="sb-settings" onclick="setSection('settings')"><span class="si-icon">⚙</span> Settings</a>
+      <div class="sidebar-storage" id="driveStorageBar">
+        <div class="sidebar-storage-label">Storage</div>
+        <div class="sidebar-storage-track"><div class="sidebar-storage-fill" id="sidebarQuotaFill" style="width:0%"></div></div>
+        <div class="sidebar-storage-text" id="sidebarQuotaText">Loading...</div>
+      </div>
+    </div>
+    <div class="drive-content">
+      <div class="drive-toolbar">
+        <span class="drive-section-title" id="sectionTitle">My Files</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="drive-view-btns">
+            <button class="view-btn active" id="gridViewBtn" onclick="setView('grid')" title="Grid">⊞</button>
+            <button class="view-btn" id="listViewBtn" onclick="setView('list')" title="List">☰</button>
+          </div>
+        </div>
+      </div>
+      <div id="filesContainer"></div>
+    </div>
+  </div>
+  <div class="upload-fab active"><button class="fab-btn" onclick="openUploadModal()" title="Upload">⬆</button></div>
+</div>
+
+<!-- Drive upload modal -->
+<div class="upload-modal" id="driveUploadModal">
+  <div class="upload-modal-card">
+    <div class="upload-modal-header">
+      <div class="upload-modal-title">☁ Upload to Moonlight Cloud</div>
+      <button class="modal-close" onclick="closeUploadModal()">✕</button>
+    </div>
+    <div id="modalUploadWrap">
+      <div class="drive-upload-zone" id="driveUploadZone">
+        <input type="file" id="driveFileInput"/>
+        <div style="font-size:2.5rem;margin-bottom:12px">☁</div>
+        <div style="font-weight:600;margin-bottom:6px">Drop file here or click to browse</div>
+        <div style="font-size:0.8rem;color:var(--muted)">Any file type · Up to 9 TB</div>
+      </div>
+    </div>
+    <div id="modalScanCard" style="display:none">
+      <div class="scan-steps">
+        <div class="scan-step" id="mstep-hash"><div class="step-icon">🔐</div><div class="step-label">Computing SHA-256 hash</div><div class="step-status" id="mstep-hash-status">Waiting</div></div>
+        <div class="scan-step" id="mstep-malware"><div class="step-icon">🦠</div><div class="step-label">Threat database check</div><div class="step-status" id="mstep-malware-status">Waiting</div></div>
+      </div>
+    </div>
+    <div id="modalProgCard" style="display:none;margin-top:16px">
+      <div class="prog-filename" id="mProgName"></div>
+      <div class="prog-size" id="mProgSize" style="color:var(--muted);font-size:0.8rem;margin-bottom:16px"></div>
+      <div class="prog-track"><div class="prog-fill" id="mProgFill"></div></div>
+      <div class="prog-stats" style="margin-top:8px"><span id="mProgPct">0%</span><span id="mProgSpeed"></span></div>
+    </div>
+    <div id="modalResultCard" style="display:none;margin-top:16px">
+      <div class="result-banner"><div class="result-banner-icon">✅</div><div><div class="result-banner-title">Upload complete!</div><div class="result-banner-sub" id="mResultMeta"></div></div></div>
+      <div class="link-row"><span class="link-url" id="mResultUrl" style="font-size:0.8rem"></span><button class="copy-btn" onclick="copyMResultUrl()">Copy</button></div>
+      <div style="display:flex;gap:8px;margin-top:12px"><button class="btn-primary" style="flex:1" onclick="closeUploadModal();loadDriveFiles()">Done</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="upgradeModal">
+  <div class="modal modal-upgrade">
+    <span class="modal-icon">🌙</span>
+    <div class="modal-title">Unlock Moonlight Cloud</div>
+    <div class="modal-body">Guest limit is <strong>20 GB</strong>. Sign in with Google to upgrade to <strong>9 TB</strong> free storage!</div>
+    <div class="upgrade-features">
+      <div class="upgrade-feat">9 TB free storage</div>
+      <div class="upgrade-feat">Unlimited uploads</div>
+      <div class="upgrade-feat">Google Drive-style file manager</div>
+      <div class="upgrade-feat">Keep files forever option</div>
+    </div>
+    <div id="upgradeGSIBtn" style="margin-bottom:10px"></div>
+    <button class="modal-btn modal-btn-secondary" onclick="closeModal('upgradeModal')">Maybe later</button>
+  </div>
+</div>
+<div class="modal-overlay" id="securityModal">
+  <div class="modal modal-security">
+    <span class="modal-icon">🚨</span>
+    <div class="modal-title">Security Alert</div>
+    <div class="modal-body" id="securityModalBody">Malicious file detected. This file has been permanently blocked.</div>
+    <button class="modal-btn modal-btn-secondary" onclick="closeModal('securityModal');resetAll()">Dismiss</button>
+  </div>
+</div>
+
+<!-- Context menu -->
+<div class="ctx-menu" id="ctxMenu">
+  <div class="ctx-item" onclick="ctxAction('share')">🔗 Copy share link</div>
+  <div class="ctx-item" onclick="ctxAction('download')">⬇ Download</div>
+  <div class="ctx-item" onclick="ctxAction('keepforever')">♾ Keep Forever</div>
+  <div class="ctx-item danger" onclick="ctxAction('delete')">🗑 Delete</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const GOOGLE_CLIENT_ID = '216983659910-038e24nvehhll2ef06dqbiijg38v9abm.apps.googleusercontent.com';
+const GB = 1024*1024*1024;
+const GUEST_LIMIT = 20*GB;
+const USER_LIMIT  = 9*1024*GB; // 9 TB free for signed-in users
+
+let sessionToken  = localStorage.getItem('ml_token') || null;
+let currentUser   = JSON.parse(localStorage.getItem('ml_user') || 'null');
+let keepForeverPref = localStorage.getItem('ml_keepforever') === 'true';
+let cliCommands   = {};
+let currentFileId = null; // last uploaded fileId for keep-forever
+let allFiles      = [];
+let currentSection = 'myfiles';
+let currentView   = 'grid';
+let ctxFileId     = null;
+
+// ── STARS ─────────────────────────────────────────────────────────────────────
+(function(){
+  const sf=document.getElementById('sf');
+  for(let i=0;i<100;i++){
+    const s=document.createElement('div');s.className='star';
+    const sz=Math.random()*2.2+0.5;
+    s.style.cssText=`left:${Math.random()*100}%;top:${Math.random()*100}%;width:${sz}px;height:${sz}px;--d:${(Math.random()*4+2).toFixed(1)}s;--o:${(Math.random()*0.5+0.1).toFixed(2)};animation-delay:${(Math.random()*4).toFixed(1)}s`;
+    sf.appendChild(s);
+  }
+})();
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+function init(){
+  if(currentUser && sessionToken){ showDriveView(); }
+  else { showGuestView(); initGSI(); }
+}
+
+// ── GOOGLE AUTH ───────────────────────────────────────────────────────────────
+function initGSI(){
+  if(typeof google==='undefined'){ setTimeout(initGSI,200); return; }
+  google.accounts.id.initialize({ client_id:GOOGLE_CLIENT_ID, callback:handleGoogleCb, auto_select:false });
+  google.accounts.id.renderButton(document.getElementById('gsiBtn'),{ theme:'filled_black',size:'medium',shape:'pill',text:'signin_with' });
+  setTimeout(()=>{
+    const el=document.getElementById('upgradeGSIBtn');
+    if(el) google.accounts.id.renderButton(el,{ theme:'filled_black',size:'large',shape:'rectangular',text:'signin_with',width:400 });
+  },500);
+  refreshQuota();
+}
+
+async function handleGoogleCb(response){
+  try {
+    const res=await fetch('/api/auth/google',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({credential:response.credential}) });
+    const data=await res.json();
+    if(data.ok){
+      sessionToken=data.token;
+      // Fetch full Google profile picture
+      const profile = parseJwt(response.credential);
+      currentUser={ name:data.name, email:data.email, picture: profile.picture || data.picture };
+      keepForeverPref = data.keepForever || false;
+      localStorage.setItem('ml_token', sessionToken);
+      localStorage.setItem('ml_user', JSON.stringify(currentUser));
+      localStorage.setItem('ml_keepforever', keepForeverPref);
+      closeModal('upgradeModal');
+      showDriveView();
+      showToast('Welcome, '+data.name+'! 👋','success');
+    }
+  } catch(e){ showToast('Sign-in failed','error'); }
+}
+
+function parseJwt(token){
+  try { return JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch { return {}; }
+}
+
+async function signOut(){
+  try { await fetch('/api/auth/logout',{method:'POST',headers:{'x-session-token':sessionToken}}); } catch{}
+  sessionToken=null; currentUser=null; keepForeverPref=false;
+  localStorage.removeItem('ml_token'); localStorage.removeItem('ml_user'); localStorage.removeItem('ml_keepforever');
+  showGuestView();
+  showToast('Signed out');
+}
+
+// ── VIEW SWITCHING ─────────────────────────────────────────────────────────────
+function showGuestView(){
+  document.getElementById('guestView').style.display='flex';
+  document.getElementById('driveView').classList.remove('active');
+  initGSI(); refreshQuota();
+}
+
+function showDriveView(){
+  document.getElementById('guestView').style.display='none';
+  document.getElementById('driveView').classList.add('active');
+  renderDriveAvatar();
+  document.getElementById('driveUserName').textContent = currentUser.name||currentUser.email;
+  loadDriveFiles(); refreshDriveQuota();
+}
+
+function renderDriveAvatar(){
+  const wrap = document.getElementById('driveAvatarWrap');
+  if(currentUser.picture){
+    wrap.innerHTML = `<img class="drive-avatar" src="${currentUser.picture}" alt="" onerror="this.parentNode.innerHTML=renderInitials()">`;
+  } else {
+    wrap.innerHTML = renderInitials();
+  }
+}
+
+function renderInitials(){
+  const initials = (currentUser.name||currentUser.email||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  return `<div class="drive-avatar-placeholder">${initials}</div>`;
+}
+
+// ── DRIVE FILES ───────────────────────────────────────────────────────────────
+async function loadDriveFiles(){
+  try {
+    const res=await fetch('/api/my-files',{headers:{'x-session-token':sessionToken}});
+    const data=await res.json();
+    allFiles=data.files||[];
+    renderSection();
+  } catch{ showToast('Could not load files','error'); }
+}
+
+function setSection(s){
+  currentSection=s;
+  document.querySelectorAll('.sidebar-item').forEach(el=>el.classList.remove('active'));
+  const el=document.getElementById('sb-'+s);
+  if(el) el.classList.add('active');
+  const titles={myfiles:'My Files',recent:'Recent',shared:'Shared Links',images:'Images',videos:'Videos',docs:'Documents',archives:'Archives',settings:'Settings'};
+  document.getElementById('sectionTitle').textContent=titles[s]||'Files';
+  renderSection();
+  if(window.innerWidth<=768) toggleSidebar(false);
+}
+
+function toggleSidebar(force){
+  const sb=document.getElementById('driveSidebar');
+  const scrim=document.getElementById('sidebarScrim');
+  const open = force!==undefined ? force : !sb.classList.contains('mobile-open');
+  sb.classList.toggle('mobile-open', open);
+  scrim.classList.toggle('active', open);
+}
+
+function getFilteredFiles(){
+  const q=(document.getElementById('searchInput').value||'').toLowerCase();
+  let f=[...allFiles];
+  if(q) f=f.filter(x=>x.name.toLowerCase().includes(q));
+  const ext=n=>(n.split('.').pop()||'').toLowerCase();
+  if(currentSection==='images') f=f.filter(x=>['jpg','jpeg','png','gif','webp','svg','bmp'].includes(ext(x.name)));
+  else if(currentSection==='videos') f=f.filter(x=>['mp4','mkv','webm','avi','mov','m4v'].includes(ext(x.name)));
+  else if(currentSection==='docs') f=f.filter(x=>['pdf','doc','docx','txt','xls','xlsx','ppt','pptx','csv'].includes(ext(x.name)));
+  else if(currentSection==='archives') f=f.filter(x=>['zip','rar','7z','tar','gz','bz2'].includes(ext(x.name)));
+  else if(currentSection==='recent') f=[...f].sort((a,b)=>new Date(b.uploadedAt)-new Date(a.uploadedAt)).slice(0,20);
+  return f;
+}
+
+function filterFiles(){ renderSection(); }
+
+function expiryLabel(f){
+  if(f.keepForever) return {text:'♾ Never expires', cls:'forever'};
+  if(!f.expiresAt) return {text:'30 days', cls:''};
+  const days = Math.ceil((new Date(f.expiresAt)-Date.now())/(1000*60*60*24));
+  if(days<=0) return {text:'Expired', cls:''};
+  return {text:`Expires in ${days}d`, cls: days<=3?'':''}; 
+}
+
+function renderSection(){
+  const container=document.getElementById('filesContainer');
+  if(currentSection==='settings'){ renderSettings(container); return; }
+  const files=getFilteredFiles();
+  if(!files.length){ container.innerHTML=`<div class="empty-state"><span class="ei">🌙</span><h3>No files here yet</h3><p>Upload your first file using the button above</p></div>`; return; }
+  if(currentView==='grid') renderGrid(files,container);
+  else renderList(files,container);
+}
+
+function renderSettings(container){
+  container.innerHTML=`
+    <div class="settings-panel">
+      <div class="settings-title">⚙ Storage Settings</div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">Keep files forever</div>
+          <div class="setting-desc">By default, files are deleted after 30 days. Enable this to keep all your uploads permanently.</div>
+        </div>
+        <label class="toggle" style="margin-left:20px">
+          <input type="checkbox" id="keepForeverToggle" ${keepForeverPref?'checked':''} onchange="toggleKeepForever(this.checked)"/>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+    <div class="settings-panel">
+      <div class="settings-title">👤 Account</div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">${esc(currentUser.name||'')}</div>
+          <div class="setting-desc">${esc(currentUser.email||'')}</div>
+        </div>
+        <button class="btn btn-ghost" onclick="signOut()">Sign out</button>
+      </div>
+    </div>
+  `;
+}
+
+async function toggleKeepForever(val){
+  keepForeverPref = val;
+  localStorage.setItem('ml_keepforever', val);
+  if(val){
+    await fetch('/api/settings/keep-forever',{method:'POST',headers:{'x-session-token':sessionToken}});
+    showToast('♾ Keep Forever enabled — all files will be kept permanently','success');
+  } else {
+    showToast('Files will now expire after 30 days');
+  }
+}
+
+function renderGrid(files,container){
+  container.innerHTML=`<div class="files-grid">${files.map(f=>{
+    const exp=expiryLabel(f);
+    return `<div class="file-card" ondblclick="openFile('${f.id}')" oncontextmenu="showCtx(event,'${f.id}')">
+      <button class="file-card-menu" onclick="showCtx(event,'${f.id}')"><div class="file-card-menu-btn">⋮</div></button>
+      <span class="file-card-icon">${fileIcon(f.name)}</span>
+      <div class="file-card-name" title="${esc(f.name)}">${esc(f.name)}</div>
+      <div class="file-card-size">${fmtBytes(f.size)}</div>
+      <div class="file-card-expiry ${exp.cls}">${exp.text}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderList(files,container){
+  container.innerHTML=`<div class="files-list">${files.map(f=>{
+    const exp=expiryLabel(f);
+    return `<div class="file-list-row" oncontextmenu="showCtx(event,'${f.id}')">
+      <div class="file-list-icon">${fileIcon(f.name)}</div>
+      <div class="file-list-name" title="${esc(f.name)}">${esc(f.name)}</div>
+      <div class="file-list-expiry ${exp.cls}">${exp.text}</div>
+      <div class="file-list-size">${fmtBytes(f.size)}</div>
+      <div class="file-list-date">${timeAgo(f.uploadedAt)}</div>
+      <div class="file-list-actions">
+        <button class="icon-btn" onclick="copyFileLink('${f.id}')" title="Copy link">🔗</button>
+        <a class="icon-btn" href="/download/${f.id}/raw" download title="Download">⬇</a>
+        <button class="icon-btn del" onclick="deleteFile('${f.id}')" title="Delete">🗑</button>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function setView(v){ currentView=v; document.getElementById('gridViewBtn').classList.toggle('active',v==='grid'); document.getElementById('listViewBtn').classList.toggle('active',v==='list'); renderSection(); }
+function openFile(id){ const f=allFiles.find(x=>x.id===id); if(f&&f.shareUrl) window.open(f.shareUrl,'_blank'); }
+async function copyFileLink(id){ const f=allFiles.find(x=>x.id===id); if(f&&f.shareUrl){ await navigator.clipboard.writeText(f.shareUrl); showToast('Link copied!','success'); } }
+async function keepForeverFile(id){
+  const res=await fetch('/api/file/'+id+'/keep-forever',{method:'POST',headers:{'x-session-token':sessionToken}});
+  const data=await res.json();
+  if(data.ok){ const f=allFiles.find(x=>x.id===id); if(f){f.keepForever=true;f.expiresAt=null;} renderSection(); showToast('♾ File will never be deleted','success'); }
+}
+async function deleteFile(id){ if(!confirm('Delete this file?')) return; const res=await fetch('/api/file/'+id,{method:'DELETE',headers:{'x-session-token':sessionToken}}); const data=await res.json(); if(data.ok){allFiles=allFiles.filter(f=>f.id!==id);renderSection();refreshDriveQuota();showToast('Deleted','success');}else showToast(data.error||'Error','error'); }
+
+// ── CONTEXT MENU ──────────────────────────────────────────────────────────────
+function showCtx(e,id){ e.preventDefault();e.stopPropagation(); ctxFileId=id; const menu=document.getElementById('ctxMenu'); menu.classList.add('active'); menu.style.left=Math.min(e.clientX,window.innerWidth-190)+'px'; menu.style.top=Math.min(e.clientY,window.innerHeight-140)+'px'; }
+function ctxAction(action){
+  document.getElementById('ctxMenu').classList.remove('active');
+  const f=allFiles.find(x=>x.id===ctxFileId);
+  if(action==='share') copyFileLink(ctxFileId);
+  else if(action==='download'&&f){ const a=document.createElement('a');a.href='/download/'+ctxFileId+'/raw';a.download=f.name;a.click(); }
+  else if(action==='keepforever') keepForeverFile(ctxFileId);
+  else if(action==='delete') deleteFile(ctxFileId);
+}
+document.addEventListener('click',()=>document.getElementById('ctxMenu').classList.remove('active'));
+
+// ── DRIVE UPLOAD MODAL ────────────────────────────────────────────────────────
+function openUploadModal(){ document.getElementById('driveUploadModal').classList.add('active'); resetModalUpload(); }
+function closeUploadModal(){ document.getElementById('driveUploadModal').classList.remove('active'); resetModalUpload(); }
+function resetModalUpload(){
+  document.getElementById('modalUploadWrap').style.display='';
+  document.getElementById('modalScanCard').style.display='none';
+  document.getElementById('modalProgCard').style.display='none';
+  document.getElementById('modalResultCard').style.display='none';
+  document.getElementById('driveFileInput').value='';
+  ['hash','malware'].forEach(id=>{ setMStep(id,'','Waiting'); });
+}
+
+const duz=document.getElementById('driveUploadZone');
+duz.addEventListener('dragover',e=>{e.preventDefault();duz.classList.add('drag-over')});
+duz.addEventListener('dragleave',()=>duz.classList.remove('drag-over'));
+duz.addEventListener('drop',e=>{e.preventDefault();duz.classList.remove('drag-over');if(e.dataTransfer.files[0])handleModalFile(e.dataTransfer.files[0])});
+document.getElementById('driveFileInput').addEventListener('change',function(){if(this.files[0])handleModalFile(this.files[0])});
+
+async function handleModalFile(file){
+  if(file.size>USER_LIMIT){ showToast('File exceeds 9 TB limit','error'); return; }
+  document.getElementById('modalUploadWrap').style.display='none';
+  document.getElementById('modalScanCard').style.display='block';
+  setMStep('hash','active','');
+  let hash;
+  try { hash=await sha256File(file); setMStep('hash','done','✓ Clean'); } catch { setMStep('hash','fail','Error'); return; }
+  setMStep('malware','active','');
+  const scan=await checkMalware(hash);
+  if(!scan.clean){ setMStep('malware','fail','BLOCKED'); showToast('Malicious file blocked!','error'); resetModalUpload(); return; }
+  setMStep('malware','done','✓ Clean');
+  await new Promise(r=>setTimeout(r,400));
+  document.getElementById('modalScanCard').style.display='none';
+  document.getElementById('modalProgCard').style.display='block';
+  document.getElementById('mProgName').textContent=file.name;
+  document.getElementById('mProgSize').textContent=fmtBytes(file.size);
+  startModalUpload(file,hash);
+}
+
+function startModalUpload(file,hash){
+  const formData=new FormData();
+  formData.append('file',file);formData.append('hash',hash);
+  const xhr=new XMLHttpRequest(); const t0=Date.now();
+  xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=Math.round(e.loaded/e.total*100); document.getElementById('mProgFill').style.width=pct+'%'; document.getElementById('mProgPct').textContent=pct+'%'; document.getElementById('mProgSpeed').textContent=fmtBytes(e.loaded/((Date.now()-t0)/1000))+'/s'; } });
+  xhr.addEventListener('load',()=>{
+    try {
+      const data=JSON.parse(xhr.responseText);
+      if(data.ok){
+        document.getElementById('modalProgCard').style.display='none';
+        document.getElementById('modalResultCard').style.display='block';
+        document.getElementById('mResultMeta').textContent=file.name+' · '+fmtBytes(file.size);
+        document.getElementById('mResultUrl').textContent=data.shareUrl;
+        document.getElementById('mResultUrl').dataset.url=data.shareUrl;
+        refreshDriveQuota();
+      } else { showToast(data.error||'Upload failed','error'); resetModalUpload(); }
+    } catch { showToast('Server error','error'); resetModalUpload(); }
+  });
+  xhr.addEventListener('error',()=>{ showToast('Network error','error'); resetModalUpload(); });
+  xhr.open('POST','/api/upload');
+  xhr.setRequestHeader('x-session-token',sessionToken);
+  xhr.send(formData);
+}
+
+function copyMResultUrl(){ navigator.clipboard.writeText(document.getElementById('mResultUrl').dataset.url||document.getElementById('mResultUrl').textContent); showToast('Link copied!','success'); }
+function setMStep(id,state,text){ const el=document.getElementById('mstep-'+id); const st=document.getElementById('mstep-'+id+'-status'); if(!el||!st) return; el.className='scan-step '+state; st.className='step-status '+(state==='active'?'spinning':(state==='done'?'ok':'fail')); if(state!=='active') st.textContent=text; else st.textContent=''; }
+
+// ── DRIVE QUOTA ───────────────────────────────────────────────────────────────
+async function refreshDriveQuota(){
+  try { const res=await fetch('/api/quota',{headers:{'x-session-token':sessionToken}}); const q=await res.json(); const pct=Math.min(100,(q.used/q.max)*100); document.getElementById('sidebarQuotaFill').style.width=pct+'%'; document.getElementById('sidebarQuotaText').innerHTML=`<b>${fmtBytes(q.used)}</b> of ${fmtBytes(q.max)} used`; } catch{}
+}
+
+// ── GUEST UPLOAD ──────────────────────────────────────────────────────────────
+document.getElementById('fileInput').addEventListener('change',function(){if(this.files[0])handleGuestFile(this.files[0])});
+const uz=document.getElementById('uploadZone');
+uz.addEventListener('dragover',e=>{e.preventDefault();uz.classList.add('drag-over')});
+uz.addEventListener('dragleave',()=>uz.classList.remove('drag-over'));
+uz.addEventListener('drop',e=>{e.preventDefault();uz.classList.remove('drag-over');if(e.dataTransfer.files[0])handleGuestFile(e.dataTransfer.files[0])});
+
+async function handleGuestFile(file){
+  const limit=sessionToken?USER_LIMIT:GUEST_LIMIT;
+  if(file.size>limit){ if(!sessionToken) openModal('upgradeModal'); else showToast('File exceeds 9 TB limit','error'); resetFileInput(); return; }
+  document.getElementById('guestUploadWrap').style.display='none';
+  document.getElementById('scanCard').classList.add('active');
+  document.getElementById('scanFilename').textContent=file.name;
+  setStep('hash','active','');
+  let hash;
+  try { hash=await sha256File(file); setStep('hash','done','✓ '+hash.slice(0,12)+'...'); } catch { setStep('hash','fail','Error'); showSecurityModal('Could not verify file.'); return; }
+  setStep('malware','active','');
+  const scan=await checkMalware(hash);
+  if(!scan.clean){ setStep('malware','fail','BLOCKED'); showSecurityModal('Malicious file detected and blocked.'); return; }
+  setStep('malware','done','✓ Clean');
+  setStep('tier','active','');
+  await new Promise(r=>setTimeout(r,400));
+  setStep('tier','done','✓ '+(sessionToken?'9 TB Pro':'20 GB Guest'));
+  await new Promise(r=>setTimeout(r,300));
+  document.getElementById('scanCard').classList.remove('active');
+  startGuestUpload(file,hash);
+}
+
+function startGuestUpload(file,hash){
+  document.getElementById('uploadCard').classList.add('active');
+  document.getElementById('progName').textContent=file.name;
+  document.getElementById('progSize').textContent=fmtBytes(file.size);
+  document.getElementById('seedRows').innerHTML=`
+    <div class="seed-row"><span class="seed-label">☁ Server storage</span><span class="seed-val accent" id="cloudStatus">Uploading...</span></div>
+    <div class="seed-row"><span class="seed-label">🌍 Global delivery</span><span class="seed-val" id="p2pStatus" style="color:var(--muted)">Pending</span></div>
+    <div class="seed-row"><span class="seed-label">🔗 Share link</span><span class="seed-val" id="linkStatus" style="color:var(--muted)">Generating...</span></div>`;
+  const formData=new FormData();
+  formData.append('file',file);formData.append('hash',hash);
+  const xhr=new XMLHttpRequest(); const t0=Date.now();
+  xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=Math.round(e.loaded/e.total*100); document.getElementById('progFill').style.width=pct+'%'; document.getElementById('progPct').textContent=pct+'%'; document.getElementById('progSpeed').textContent=fmtBytes(e.loaded/((Date.now()-t0)/1000))+'/s'; if(pct>5) document.getElementById('cloudStatus').textContent=pct+'% uploaded'; } });
+  xhr.addEventListener('load',()=>{
+    try {
+      const data=JSON.parse(xhr.responseText);
+      if(data.ok){
+        currentFileId=data.fileId;
+        document.getElementById('cloudStatus').textContent='✓ Stored';document.getElementById('cloudStatus').className='seed-val success';
+        document.getElementById('p2pStatus').textContent='✓ Ready';document.getElementById('p2pStatus').className='seed-val success';
+        document.getElementById('linkStatus').textContent='✓ Generated';document.getElementById('linkStatus').className='seed-val success';
+        cliCommands=data.commands;
+        setTimeout(()=>{
+          document.getElementById('uploadCard').classList.remove('active');
+          document.getElementById('resultCard').classList.add('active');
+          // Dynamic share URL — use the one returned by server (it uses request host)
+          document.getElementById('resultUrl').textContent=data.shareUrl;
+          document.getElementById('resultMeta').textContent=file.name+' · '+fmtBytes(file.size);
+          document.getElementById('dlBtn').href=data.shareUrl;
+          // Show or hide expiry banner
+          if(data.keepForever || keepForeverPref){
+            document.getElementById('expiryBanner').classList.add('hidden');
+          } else {
+            document.getElementById('expiryBanner').classList.remove('hidden');
+            document.getElementById('keepForeverBtn').textContent='Keep Forever';
+            document.getElementById('keepForeverBtn').classList.remove('done');
+          }
+          setCliTab('windows');
+          refreshQuota();
+        },800);
+      } else { showToast(data.error||'Upload failed','error'); resetAll(); }
+    } catch { showToast('Server error','error'); resetAll(); }
+  });
+  xhr.addEventListener('error',()=>{ showToast('Network error','error'); resetAll(); });
+  xhr.open('POST','/api/upload');
+  if(sessionToken) xhr.setRequestHeader('x-session-token',sessionToken);
+  xhr.send(formData);
+}
+
+// ── KEEP FOREVER (after upload) ───────────────────────────────────────────────
+async function setKeepForever(){
+  const btn=document.getElementById('keepForeverBtn');
+  btn.textContent='Saving...';
+  try {
+    if(currentFileId){
+      await fetch('/api/file/'+currentFileId+'/keep-forever',{method:'POST',headers:sessionToken?{'x-session-token':sessionToken}:{}});
+    }
+    // If logged in, also update account setting
+    if(sessionToken){
+      await fetch('/api/settings/keep-forever',{method:'POST',headers:{'x-session-token':sessionToken}});
+      keepForeverPref=true;
+      localStorage.setItem('ml_keepforever','true');
+    }
+    btn.textContent='✓ Never expires';
+    btn.classList.add('done');
+    showToast('♾ File will never be deleted','success');
+  } catch { btn.textContent='Keep Forever'; showToast('Error saving setting','error'); }
+}
+
+// ── SECURITY & HASH ───────────────────────────────────────────────────────────
+async function sha256File(file){
+  // Stream the file in chunks instead of loading it all into memory at once.
+  // file.arrayBuffer() on the whole file throws for large files (video, big
+  // uploads) on many mobile browsers — small zips just stayed under that limit.
+  const { createSHA256 } = await import('https://cdn.jsdelivr.net/npm/hash-wasm@4/dist/index.esm.min.js');
+  const hasher = await createSHA256();
+  const chunkSize = 8 * 1024 * 1024; // 8MB per chunk
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const chunk = file.slice(offset, offset + chunkSize);
+    hasher.update(new Uint8Array(await chunk.arrayBuffer()));
+  }
+  return hasher.digest('hex');
+}
+async function checkMalware(hash){ try { const res=await fetch('/api/malware-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hash})}); return await res.json(); } catch { return {clean:true}; } }
+
+// ── GUEST QUOTA ───────────────────────────────────────────────────────────────
+async function refreshQuota(){
+  try { const headers=sessionToken?{'x-session-token':sessionToken}:{}; const res=await fetch('/api/quota',{headers}); const q=await res.json(); const pct=Math.min(100,(q.used/q.max)*100); document.getElementById('quotaFill').style.width=pct+'%'; document.getElementById('quotaText').innerHTML=`<b>${fmtBytes(q.used)}</b> / ${fmtBytes(q.max)}`; document.getElementById('guestUpgradeHint').style.display=q.isGuest?'flex':'none'; } catch{}
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function setStep(id,state,text){ const el=document.getElementById('step-'+id); const st=document.getElementById('step-'+id+'-status'); if(!el||!st) return; el.className='scan-step '+state; st.className='step-status '+(state==='active'?'spinning':(state==='done'?'ok':'fail')); if(state!=='active') st.textContent=text; else st.textContent=''; }
+function setCliTab(os,el){ document.querySelectorAll('.cli-tab').forEach(t=>t.classList.remove('active')); if(el) el.classList.add('active'); else document.querySelector('.cli-tab').classList.add('active'); document.getElementById('cliText').textContent=cliCommands[os]||''; }
+function copyCli(){ navigator.clipboard.writeText(document.getElementById('cliText').textContent); showToast('Copied!','success'); }
+function copyShareUrl(){ navigator.clipboard.writeText(document.getElementById('resultUrl').textContent); const btn=document.getElementById('copyUrlBtn'); btn.textContent='Copied!';btn.classList.add('copied'); setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('copied');},2000); }
+function resetAll(){ document.getElementById('guestUploadWrap').style.display=''; ['scanCard','uploadCard'].forEach(id=>document.getElementById(id).classList.remove('active')); document.getElementById('resultCard').classList.remove('active'); ['hash','malware','tier'].forEach(id=>setStep(id,'','Waiting')); document.getElementById('progFill').style.width='0%'; cliCommands={}; currentFileId=null; resetFileInput(); }
+function resetFileInput(){ document.getElementById('fileInput').value=''; }
+function openModal(id){ document.getElementById(id).classList.add('active'); }
+function closeModal(id){ document.getElementById(id).classList.remove('active'); }
+function showSecurityModal(msg){ document.getElementById('securityModalBody').textContent=msg; document.getElementById('scanCard').classList.remove('active'); document.getElementById('guestUploadWrap').style.display=''; openModal('securityModal'); resetFileInput(); }
+function fileIcon(n){ const e=(n.split('.').pop()||'').toLowerCase(); return {mp4:'🎬',mkv:'🎬',webm:'🎬',avi:'🎬',mov:'🎬',mp3:'🎵',wav:'🎵',flac:'🎵',jpg:'🖼',jpeg:'🖼',png:'🖼',gif:'🖼',webp:'🖼',zip:'📦',rar:'📦','7z':'📦',tar:'📦',gz:'📦',pdf:'📄',docx:'📝',doc:'📝',txt:'📝',exe:'⚙',apk:'📱',iso:'💿',dmg:'💿'}[e]||'📁'; }
+function fmtBytes(b){ if(!b) return '0 B'; if(b>=1e9) return (b/1e9).toFixed(2)+' GB'; if(b>=1e6) return (b/1e6).toFixed(1)+' MB'; if(b>=1e3) return (b/1e3).toFixed(0)+' KB'; return b+' B'; }
+function timeAgo(iso){ const d=(Date.now()-new Date(iso))/1000; if(d<60) return 'just now'; if(d<3600) return Math.floor(d/60)+'m ago'; if(d<86400) return Math.floor(d/3600)+'h ago'; return Math.floor(d/86400)+'d ago'; }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+let toastT; function showToast(msg,type=''){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show '+type; clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),3500); }
+
+init();
+</script>
+</body>
+</html>

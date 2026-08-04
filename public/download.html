@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Download — Moonlight Cloud</title>
+<script src="https://cdn.jsdelivr.net/npm/webtorrent@2/webtorrent.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+:root{
+  --bg:#05071a;--surface:#0c1128;--surface2:#111630;--surface3:#161c38;
+  --border:#1e2545;--border2:#2a3360;
+  --accent:#5b8fff;--accent2:#8b5fff;--accent3:#00d4ff;
+  --glow:rgba(91,143,255,0.2);--text:#e8edf8;--muted:#6b7a99;--muted2:#8899bb;
+  --success:#2dd48a;--danger:#ff5c72;--warn:#ffb547;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
+.starfield{position:fixed;inset:0;pointer-events:none;z-index:0}
+.star{position:absolute;border-radius:50%;background:white;animation:twinkle var(--d,3s) ease-in-out infinite;opacity:var(--o,0.4)}
+@keyframes twinkle{0%,100%{opacity:var(--o,0.4)}50%{opacity:calc(var(--o,0.4)*0.2)}}
+.nebula{position:fixed;border-radius:50%;filter:blur(80px);pointer-events:none;z-index:0}
+.n1{width:500px;height:500px;background:radial-gradient(circle,rgba(91,143,255,0.07) 0%,transparent 70%);top:-150px;left:-100px}
+.n2{width:400px;height:400px;background:radial-gradient(circle,rgba(139,95,255,0.06) 0%,transparent 70%);bottom:-100px;right:-100px}
+nav{position:relative;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:16px 32px;border-bottom:1px solid var(--border);background:rgba(5,7,26,0.85);backdrop-filter:blur(16px)}
+.logo{display:flex;align-items:center;gap:10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.15rem;letter-spacing:-0.02em;color:var(--text);text-decoration:none}
+.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 16px var(--glow)}
+main{position:relative;z-index:1;flex:1;display:flex;align-items:center;justify-content:center;padding:40px 20px}
+.card{width:100%;max-width:600px;background:var(--surface);border:1px solid var(--border);border-radius:24px;padding:40px;box-shadow:0 0 60px rgba(0,0,0,0.5)}
+
+/* Loading */
+.loading-state{text-align:center;padding:40px 20px}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* File info */
+.file-icon-xl{font-size:4.5rem;text-align:center;display:block;margin-bottom:20px;filter:drop-shadow(0 0 20px rgba(200,216,255,0.3))}
+.file-title{font-family:'Space Grotesk',sans-serif;font-size:1.5rem;font-weight:700;text-align:center;word-break:break-word;margin-bottom:8px}
+.file-meta-row{display:flex;justify-content:center;gap:16px;margin-bottom:32px;flex-wrap:wrap}
+.file-meta-chip{padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:100px;font-size:0.78rem;color:var(--muted2)}
+
+/* Queue banner */
+.queue-banner{padding:20px;background:rgba(255,181,71,0.06);border:1px solid rgba(255,181,71,0.2);border-radius:14px;text-align:center;margin-bottom:24px}
+.queue-icon{font-size:2rem;margin-bottom:8px;display:block}
+.queue-title{font-family:'Space Grotesk',sans-serif;font-weight:600;color:var(--warn);margin-bottom:6px}
+.queue-sub{font-size:0.85rem;color:var(--muted2)}
+
+/* Download btn */
+.dl-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:18px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:white;border-radius:14px;font-weight:700;font-size:1.05rem;text-decoration:none;font-family:'Space Grotesk',sans-serif;box-shadow:0 0 32px var(--glow);transition:all 0.15s;cursor:pointer;border:none;margin-bottom:20px}
+.dl-btn:hover{transform:translateY(-2px);box-shadow:0 0 48px var(--glow)}
+.dl-btn:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+
+/* Progress */
+.dl-progress{margin-bottom:20px;display:none}
+.dl-progress.active{display:block}
+.dl-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
+.stat-box{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
+.stat-val{font-family:'Space Grotesk',sans-serif;font-size:1.1rem;font-weight:700;margin-bottom:2px}
+.stat-val.accent{color:var(--accent)}
+.stat-val.success{color:var(--success)}
+.stat-label{font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em}
+.prog-track{background:var(--surface2);border-radius:100px;height:8px;overflow:hidden;margin-bottom:8px;border:1px solid var(--border)}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:100px;box-shadow:0 0 12px var(--glow);transition:width 0.3s;width:0%}
+.prog-pct{font-size:0.82rem;color:var(--muted);text-align:right}
+
+/* Video player */
+.video-wrap{margin-bottom:20px;display:none;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:#000}
+.video-wrap.active{display:block}
+.video-label{padding:10px 14px;background:var(--surface2);font-size:0.78rem;color:var(--muted2);display:flex;align-items:center;gap:6px}
+.video-label span{color:var(--success);font-weight:600}
+#videoPlayer{width:100%;max-height:360px;display:block;background:#000}
+
+/* Audio player */
+.audio-wrap{margin-bottom:20px;display:none;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:var(--surface2)}
+.audio-wrap.active{display:block}
+#audioPlayer{width:100%;display:block;padding:14px}
+
+/* Disclaimer */
+.scan-disclaimer{display:flex;align-items:flex-start;gap:8px;padding:12px 14px;background:rgba(255,181,71,0.06);border:1px solid rgba(255,181,71,0.2);border-radius:10px;font-size:0.78rem;color:var(--muted2);line-height:1.4;margin-bottom:20px}
+.scan-disclaimer .ic{flex-shrink:0;font-size:1rem}
+
+/* CLI */
+.divider{display:flex;align-items:center;gap:12px;margin:20px 0}
+.divider hr{flex:1;border:none;border-top:1px solid var(--border)}
+.divider span{font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap}
+.cli-tabs{display:flex;gap:4px;margin-bottom:8px}
+.cli-tab{padding:6px 14px;border-radius:7px;font-size:0.8rem;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Inter',sans-serif;transition:all 0.15s}
+.cli-tab.active{background:var(--surface2);color:var(--text);border-color:var(--accent)}
+.cli-box{background:#03050f;border:1px solid var(--border);border-radius:10px;padding:16px;font-family:'Courier New',monospace;font-size:0.78rem;color:#7dd3fc;word-break:break-all;position:relative;line-height:1.5}
+.cli-copy{position:absolute;top:10px;right:10px;padding:4px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:0.75rem;cursor:pointer;font-family:'Inter',sans-serif;transition:all 0.15s}
+.cli-copy:hover{color:var(--text);border-color:var(--accent)}
+.back-link{display:block;text-align:center;margin-top:24px;color:var(--muted);font-size:0.85rem;text-decoration:none;transition:color 0.15s}
+.back-link:hover{color:var(--accent)}
+
+/* Not found */
+.not-found{text-align:center;padding:40px 20px}
+.not-found .icon{font-size:4rem;display:block;margin-bottom:16px}
+.not-found h2{font-family:'Space Grotesk',sans-serif;font-size:1.4rem;margin-bottom:8px}
+.not-found p{color:var(--muted);margin-bottom:24px}
+
+.toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;font-size:0.875rem;font-weight:500;background:var(--surface2);border:1px solid var(--border);z-index:1000;transform:translateY(80px);opacity:0;transition:all 0.3s;pointer-events:none}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.success{border-color:var(--success);color:var(--success)}
+
+@media(max-width:900px){main{padding:32px 16px}.card{max-width:520px}}
+@media(max-width:600px){nav{padding:12px 16px}.card{padding:28px 20px}.dl-stats{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="starfield" id="sf"></div>
+<div class="nebula n1"></div><div class="nebula n2"></div>
+<nav>
+  <a href="/" class="logo"><div class="logo-icon">🌙</div>Moonlight Cloud</a>
+</nav>
+<main>
+  <div class="card" id="card">
+    <div class="loading-state">
+      <div class="spinner"></div>
+      <div style="color:var(--muted)">Loading transfer info...</div>
+    </div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+// Stars
+(function(){
+  const sf=document.getElementById('sf');
+  for(let i=0;i<80;i++){
+    const s=document.createElement('div');s.className='star';
+    const sz=Math.random()*2.2+0.5;
+    s.style.cssText=`left:${Math.random()*100}%;top:${Math.random()*100}%;width:${sz}px;height:${sz}px;--d:${(Math.random()*4+2).toFixed(1)}s;--o:${(Math.random()*0.5+0.1).toFixed(2)};animation-delay:${(Math.random()*4).toFixed(1)}s`;
+    sf.appendChild(s);
+  }
+})();
+
+const shareId = location.pathname.split('/d/')[1]?.replace(/\//g,'') || location.pathname.split('/download/')[1]?.replace(/\//g,'');
+let fileData = null;
+let commands = {};
+let wtClient = null;
+let isDownloading = false;
+
+const VIDEO_EXTS = ['mp4','mkv','webm','avi','mov','m4v'];
+const AUDIO_EXTS = ['mp3','wav','flac','aac','ogg','m4a'];
+
+async function init(){
+  if(!shareId){ showNotFound(); return; }
+  try {
+    const res = await fetch(`/api/share/${shareId}`);
+    const data = await res.json();
+    if(!data.ok){ showNotFound(); return; }
+    fileData = data;
+    commands = data.commands;
+    renderFile(data);
+  } catch { showNotFound(); }
+}
+
+function getIcon(name){
+  const e=(name.split('.').pop()||'').toLowerCase();
+  if(['mp4','mkv','webm','avi','mov'].includes(e)) return '🎬';
+  if(['mp3','wav','flac','aac'].includes(e)) return '🎵';
+  if(['jpg','jpeg','png','gif','webp'].includes(e)) return '🖼';
+  if(['zip','rar','7z','tar','gz'].includes(e)) return '📦';
+  if(['pdf'].includes(e)) return '📄';
+  if(['docx','doc','txt'].includes(e)) return '📝';
+  if(['apk'].includes(e)) return '📱';
+  if(['exe','msi'].includes(e)) return '⚙';
+  return '📁';
+}
+
+function fmtBytes(b){
+  if(b>=1e9) return (b/1e9).toFixed(2)+' GB';
+  if(b>=1e6) return (b/1e6).toFixed(1)+' MB';
+  if(b>=1e3) return (b/1e3).toFixed(0)+' KB';
+  return b+' B';
+}
+
+function timeAgo(iso){
+  const d=(Date.now()-new Date(iso))/1000;
+  if(d<60) return 'just now';
+  if(d<3600) return Math.floor(d/60)+' min ago';
+  if(d<86400) return Math.floor(d/3600)+' hours ago';
+  return Math.floor(d/86400)+' days ago';
+}
+
+function isVideo(name){
+  return VIDEO_EXTS.includes((name.split('.').pop()||'').toLowerCase());
+}
+function isAudio(name){
+  return AUDIO_EXTS.includes((name.split('.').pop()||'').toLowerCase());
+}
+
+function renderFile(data){
+  document.title = `Download ${data.name} — Moonlight Cloud`;
+  const vid = isVideo(data.name);
+  const aud = isAudio(data.name);
+  const rawUrl = `/download/${data.fileId}/raw`;
+  const shareUrl = location.origin + '/d/' + shareId;
+
+  document.getElementById('card').innerHTML = `
+    <span class="file-icon-xl">${getIcon(data.name)}</span>
+    <div class="file-title">${esc(data.name)}</div>
+    <div class="file-meta-row">
+      <span class="file-meta-chip">📦 ${fmtBytes(data.size)}</span>
+      <span class="file-meta-chip">🕐 ${timeAgo(data.uploadedAt)}</span>
+      ${data.magnetLink ? '<span class="file-meta-chip">⚡ P2P Available</span>' : ''}
+    </div>
+
+    ${data.busy ? `
+    <div class="queue-banner">
+      <span class="queue-icon">⏳</span>
+      <div class="queue-title">Server at capacity</div>
+      <div class="queue-sub">Maximum concurrent downloads reached. Your slot will open automatically — please wait.</div>
+    </div>` : ''}
+
+    ${vid ? `
+    <div class="video-wrap" id="videoWrap">
+      <div class="video-label">🎬 Streaming — <span>Loading player...</span></div>
+      <video id="videoPlayer" controls></video>
+    </div>` : ''}
+
+    ${aud ? `
+    <div class="audio-wrap" id="audioWrap">
+      <div class="video-label">🎵 Streaming — <span>Loading player...</span></div>
+      <audio id="audioPlayer" controls></audio>
+    </div>` : ''}
+
+    <div class="dl-progress" id="dlProgress">
+      <div class="dl-stats">
+        <div class="stat-box"><div class="stat-val accent" id="dlSpeed">0 MB/s</div><div class="stat-label">Speed</div></div>
+        <div class="stat-box"><div class="stat-val" id="dlPct" style="color:var(--text)">0%</div><div class="stat-label">Progress</div></div>
+        <div class="stat-box"><div class="stat-val" id="dlPeers" style="color:var(--muted2)">0</div><div class="stat-label">Peers</div></div>
+      </div>
+      <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+      <div class="prog-pct" id="progLabel">Connecting to servers...</div>
+    </div>
+
+    <button class="dl-btn" id="dlBtn" onclick="startDownload()" ${data.busy?'disabled':''}>
+      ${data.busy ? '⏳ Waiting for slot...' : '⬇ Download File'}
+    </button>
+
+    <div class="scan-disclaimer"><span class="ic">⚠</span><span>Our team does not scan files for viruses or malware. This file may be dangerous — download at your own risk.</span></div>
+
+    <div class="divider"><hr/><span>or download via terminal</span><hr/></div>
+    <div class="cli-tabs">
+      <button class="cli-tab active" onclick="setTab('windows',this)">Windows</button>
+      <button class="cli-tab" onclick="setTab('mac',this)">Mac</button>
+      <button class="cli-tab" onclick="setTab('linux',this)">Linux</button>
+    </div>
+    <div class="cli-box" id="cliBox">
+      <span id="cliText">${esc(commands.windows||'')}</span>
+      <button class="cli-copy" onclick="copyCli()">Copy</button>
+    </div>
+    <a class="back-link" href="/">← Upload your own file</a>
+  `;
+
+  // If busy, poll until slot opens
+  if(data.busy) pollBusy();
+
+  // Start media preview via WebTorrent if magnet available
+  if((vid || aud) && data.magnetLink){
+    setTimeout(()=>startMediaPreview(data.magnetLink, data.webSeedUrl, vid ? 'video' : 'audio'), 500);
+  }
+}
+
+function startMediaPreview(magnet, webSeed, kind){
+  const exts = kind === 'video' ? VIDEO_EXTS : AUDIO_EXTS;
+  const wrapId = kind === 'video' ? 'videoWrap' : 'audioWrap';
+  const playerId = kind === 'video' ? 'videoPlayer' : 'audioPlayer';
+  try {
+    wtClient = new WebTorrent();
+    const opts = webSeed ? { announce: [] } : {};
+    wtClient.add(magnet, opts, torrent => {
+      const mediaFile = torrent.files.find(f => exts.includes(f.name.split('.').pop().toLowerCase()));
+      if(!mediaFile) return;
+      const wrap = document.getElementById(wrapId);
+      const player = document.getElementById(playerId);
+      if(!wrap || !player) return;
+      wrap.classList.add('active');
+      wrap.querySelector('span').textContent = 'Streaming from server';
+      wrap.querySelector('span').style.color = 'var(--success)';
+      mediaFile.renderTo(player);
+    });
+  } catch(e){ console.warn('WebTorrent preview error:', e); }
+}
+
+function startDownload(){
+  if(isDownloading) return;
+  isDownloading = true;
+  const btn = document.getElementById('dlBtn');
+  btn.disabled = true;
+  btn.textContent = '⬇ Connecting to servers...';
+
+  const prog = document.getElementById('dlProgress');
+  prog.classList.add('active');
+
+  if(fileData.magnetLink){
+    startTorrentDownload(fileData.magnetLink, fileData.webSeedUrl, fileData.name);
+  } else {
+    // Fallback: direct download
+    directDownload();
+  }
+}
+
+function startTorrentDownload(magnet, webSeed, name){
+  try {
+    if(wtClient) wtClient.destroy();
+    wtClient = new WebTorrent();
+
+    // Add web seed as fallback
+    const torrentOpts = {};
+    if(webSeed) torrentOpts.urlList = [webSeed];
+
+    wtClient.add(magnet, torrentOpts, torrent => {
+      document.getElementById('dlBtn').textContent = '⬇ Downloading...';
+      let lastLoaded = 0;
+      let lastTime = Date.now();
+
+      const interval = setInterval(()=>{
+        const now = Date.now();
+        const elapsed = (now - lastTime)/1000;
+        const delta = torrent.downloaded - lastLoaded;
+        const speed = elapsed > 0 ? delta/elapsed : 0;
+        lastLoaded = torrent.downloaded;
+        lastTime = now;
+
+        const pct = torrent.progress * 100;
+        if(document.getElementById('progFill')) document.getElementById('progFill').style.width = pct+'%';
+        if(document.getElementById('dlPct')) document.getElementById('dlPct').textContent = pct.toFixed(1)+'%';
+        if(document.getElementById('dlSpeed')) document.getElementById('dlSpeed').textContent = fmtSpeed(torrent.downloadSpeed);
+        if(document.getElementById('dlPeers')) document.getElementById('dlPeers').textContent = torrent.numPeers;
+        if(document.getElementById('progLabel')) document.getElementById('progLabel').textContent =
+          `Downloading at ${fmtSpeed(torrent.downloadSpeed)} · ${fmtBytes(torrent.downloaded)} / ${fmtBytes(torrent.length)}`;
+      }, 500);
+
+      torrent.on('done', ()=>{
+        clearInterval(interval);
+        if(document.getElementById('progFill')) document.getElementById('progFill').style.width='100%';
+        if(document.getElementById('dlPct')) document.getElementById('dlPct').textContent='100%';
+        if(document.getElementById('dlPct')) document.getElementById('dlPct').className='stat-val success';
+        if(document.getElementById('progLabel')) document.getElementById('progLabel').textContent='✓ Download complete!';
+        torrent.files.forEach(f => f.getBlobURL((err, url)=>{
+          if(!err){
+            const a = document.createElement('a');
+            a.href = url; a.download = f.name;
+            a.click();
+          }
+        }));
+        document.getElementById('dlBtn').disabled=false;
+        document.getElementById('dlBtn').textContent='⬇ Save File';
+        isDownloading = false;
+      });
+    });
+  } catch(e){
+    console.warn('WebTorrent error, falling back to direct:', e);
+    directDownload();
+  }
+}
+
+function directDownload(){
+  const url = `/download/${fileData.fileId}/raw`;
+  const a = document.createElement('a');
+  a.href = url; a.download = fileData.name; a.click();
+  document.getElementById('dlBtn').disabled=false;
+  document.getElementById('dlBtn').textContent='⬇ Download File';
+  document.getElementById('progLabel').textContent='⬇ Direct download started';
+  isDownloading = false;
+}
+
+function pollBusy(){
+  setTimeout(async()=>{
+    const res = await fetch(`/api/share/${shareId}`).then(r=>r.json()).catch(()=>null);
+    if(res && !res.busy){
+      location.reload();
+    } else {
+      pollBusy();
+    }
+  }, 5000);
+}
+
+function setTab(os, el){
+  document.querySelectorAll('.cli-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('cliText').textContent = commands[os]||'';
+}
+
+function copyCli(){
+  navigator.clipboard.writeText(document.getElementById('cliText').textContent);
+  showToast('Copied!','success');
+}
+
+function fmtSpeed(bps){
+  if(bps>=1e6) return (bps/1e6).toFixed(1)+' MB/s';
+  if(bps>=1e3) return (bps/1e3).toFixed(0)+' KB/s';
+  return bps.toFixed(0)+' B/s';
+}
+
+function fmtBytes(b){
+  if(!b) return '0 B';
+  if(b>=1e9) return (b/1e9).toFixed(2)+' GB';
+  if(b>=1e6) return (b/1e6).toFixed(1)+' MB';
+  if(b>=1e3) return (b/1e3).toFixed(0)+' KB';
+  return b+' B';
+}
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function showNotFound(){
+  document.getElementById('card').innerHTML=`
+    <div class="not-found">
+      <span class="icon">🔍</span>
+      <h2>Transfer not found</h2>
+      <p>This link may have expired or the file was deleted.</p>
+      <a href="/" class="dl-btn" style="text-decoration:none;display:inline-flex;width:auto;padding:12px 28px">Go to Moonlight Cloud</a>
+    </div>`;
+}
+
+let toastT;
+function showToast(msg,type=''){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='toast show '+type;
+  clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+init();
+</script>
+</body>
+</html>
