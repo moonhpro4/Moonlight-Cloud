@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Sign in — Moonlight Cloud</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{--bg:#0a0c1f;--surface:#12142c;--border:#232544;--text:#f2f3fb;--muted:#9a9dc2;--accent:#8b7cf6}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;padding:24px}
+  .card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:32px 28px;text-align:center}
+  .logo{font-size:2rem;margin-bottom:6px}
+  h1{font-size:1.2rem;margin:0 0 6px}
+  p{color:var(--muted);font-size:0.85rem;margin:0 0 24px;line-height:1.5}
+  #gsiBtn{display:flex;justify-content:center;margin-bottom:14px}
+  .status{font-size:0.8rem;color:var(--muted);margin-top:16px}
+  .err{color:#ff6b6b}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🌙</div>
+    <h1>Sign in to Moonlight Cloud</h1>
+    <p>You're signing in from the Moonlight Cloud app. Once you finish, you'll be sent back automatically.</p>
+    <div id="gsiBtn"></div>
+    <div class="status" id="status"></div>
+  </div>
+
+<script>
+const params = new URLSearchParams(location.search);
+// The app tells us where to send the token back to (its custom URL scheme).
+const returnScheme = params.get('return') || 'moonlightcloud://auth';
+const GOOGLE_CLIENT_ID = '216983659910-038e24nvehhll2ef06dqbiijg38v9abm.apps.googleusercontent.com';
+
+function setStatus(msg, isErr){
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status' + (isErr ? ' err' : '');
+}
+
+function initGSI(){
+  if (typeof google === 'undefined') { setTimeout(initGSI, 200); return; }
+  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleCredential, auto_select:false });
+  google.accounts.id.renderButton(document.getElementById('gsiBtn'), { theme:'filled_black', size:'large', shape:'pill', text:'signin_with', width:280 });
+}
+
+async function handleCredential(response){
+  setStatus('Signing you in...');
+  try {
+    const res = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: response.credential })
+    });
+    const data = await res.json();
+    if (!data.ok) { setStatus('Sign-in failed. Please try again.', true); return; }
+
+    // Hand the session back to the app via its custom URL scheme deep link.
+    const back = new URL(returnScheme);
+    back.searchParams.set('token', data.token);
+    back.searchParams.set('name', data.name || '');
+    back.searchParams.set('email', data.email || '');
+    back.searchParams.set('picture', data.picture || '');
+    setStatus('Signed in — returning to the app...');
+    location.href = back.toString();
+
+    // Fallback message in case the OS doesn't auto-return to the app.
+    setTimeout(() => setStatus('You can close this tab and return to the Moonlight Cloud app.'), 1500);
+  } catch (e) {
+    setStatus('Something went wrong. Please try again.', true);
+  }
+}
+
+initGSI();
+</script>
+</body>
+</html>

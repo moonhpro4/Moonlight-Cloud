@@ -1,0 +1,56 @@
+name: Build & Release Android App
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-release.yml'
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Locate APK
+        id: apk
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n1)
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK
+        run: cp "${{ steps.apk.outputs.path }}" moonlight-cloud-debug.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ github.run_number }}
+          name: Moonlight Cloud Mobile — Newly Released
+          body: |
+            **Moonlight Cloud for Android**
+
+            This is the newly released Moonlight Cloud mobile app — the whole site, wrapped as a native Android app. Sign in with Google directly from within the app.
+
+            ⚠️ This is a **debug build for sideloading only** — not on the Play Store. You'll need to allow "install from unknown sources" to install it.
+
+            Built automatically from commit ${{ github.sha }}.
+          files: moonlight-cloud-debug.apk
+          draft: false
+          prerelease: true

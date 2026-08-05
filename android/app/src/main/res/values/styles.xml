@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.MoonlightCloud" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:statusBarColor">#0a0c1f</item>
+        <item name="android:windowBackground">#0a0c1f</item>
+        <item name="colorPrimary">#8b7cf6</item>
+        <item name="colorPrimaryDark">#0a0c1f</item>
+    </style>
+</resources>

@@ -8,6 +8,7 @@ const cors = require('cors');
 const path = require('path');
 const fs   = require('fs');
 const https = require('https');
+const crypto = require('crypto');
 
 const app    = express();
 const gClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -20,6 +21,14 @@ const sessions = {};
 const guestUploads = {};
 const activeDownloads = new Set();
 const keepForeverUsers = new Set(); // userIds who set keep forever
+
+// ── MCP (Model Context Protocol) connector state ────────────────────────────
+// Lets Claude / ChatGPT connect to a user's Moonlight Cloud account (via
+// OAuth + Google sign-in at /mcplogon) and search their files by name.
+const mcpClients    = {}; // client_id -> { redirect_uris, client_name }
+const mcpAuthFlows  = {}; // flow id   -> { client_id, redirect_uri, state, code_challenge, code_challenge_method }
+const mcpAuthCodes  = {}; // code      -> { userId, name, email, redirect_uri, code_challenge, expires }
+const mcpTokens     = {}; // access_token -> { userId, name, email }
 const MAX_CONCURRENT_DL = 2;
 const GB = 1024 * 1024 * 1024;
 const GUEST_MAX_SIZE  = 20 * GB;     // guest (not signed in): 20 GB
@@ -106,6 +115,165 @@ app.post('/api/auth/logout', (req, res) => {
   const t = req.headers['x-session-token'];
   if (t) delete sessions[t];
   res.json({ ok:true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MCP connector — lets Claude / ChatGPT search a user's Moonlight Cloud files
+// ═══════════════════════════════════════════════════════════════════════════
+function b64url(buf) { return buf.toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+
+// Authorization Server metadata — what the connector UI reads to discover
+// our authorize/token endpoints and registration support.
+app.get('/.well-known/oauth-authorization-server', (req, res) => {
+  const base = getBase(req);
+  res.json({
+    issuer: base,
+    authorization_endpoint: `${base}/mcp/authorize`,
+    token_endpoint: `${base}/mcp/token`,
+    registration_endpoint: `${base}/mcp/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    code_challenge_methods_supported: ['S256'],
+    token_endpoint_auth_methods_supported: ['none']
+  });
+});
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  const base = getBase(req);
+  res.json({ resource: `${base}/mcp`, authorization_servers: [base] });
+});
+
+// Dynamic client registration — Claude/ChatGPT self-register the first time
+// a user adds this connector URL.
+app.post('/mcp/register', (req, res) => {
+  const clientId = uuidv4();
+  mcpClients[clientId] = {
+    redirect_uris: req.body.redirect_uris || [],
+    client_name: req.body.client_name || 'MCP Client'
+  };
+  res.status(201).json({
+    client_id: clientId,
+    redirect_uris: mcpClients[clientId].redirect_uris,
+    client_name: mcpClients[clientId].client_name,
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code'],
+    response_types: ['code']
+  });
+});
+
+// Authorize step — stash the request, send the user to /mcplogon to sign in
+// with Google. This is what shows up when someone adds the connector.
+app.get('/mcp/authorize', (req, res) => {
+  const { client_id, redirect_uri, state, code_challenge, code_challenge_method } = req.query;
+  if (!redirect_uri) return res.status(400).send('Missing redirect_uri');
+  const flow = uuidv4();
+  mcpAuthFlows[flow] = { client_id, redirect_uri, state, code_challenge, code_challenge_method };
+  res.redirect(`/mcplogon?flow=${flow}`);
+});
+
+app.get('/mcplogon', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mcplogon.html')));
+
+// Called by /mcplogon after the user completes Google sign-in there. Issues
+// an authorization code and tells the page where to redirect back to
+// (Claude/ChatGPT's own redirect_uri), completing the OAuth handshake.
+app.post('/mcp/authorize/complete', async (req, res) => {
+  const { flow, credential } = req.body;
+  const pending = mcpAuthFlows[flow];
+  if (!pending) return res.status(400).json({ ok:false, error:'Sign-in link expired, please try connecting again.' });
+  try {
+    const ticket  = await gClient.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
+    const payload = ticket.getPayload();
+    const code = uuidv4();
+    mcpAuthCodes[code] = {
+      userId: payload.sub, name: payload.name, email: payload.email,
+      redirect_uri: pending.redirect_uri, code_challenge: pending.code_challenge,
+      expires: Date.now() + 5*60*1000
+    };
+    delete mcpAuthFlows[flow];
+    const redirect = new URL(pending.redirect_uri);
+    redirect.searchParams.set('code', code);
+    if (pending.state) redirect.searchParams.set('state', pending.state);
+    res.json({ ok:true, redirect: redirect.toString(), name: payload.name });
+  } catch {
+    res.status(401).json({ ok:false, error:'Google sign-in failed.' });
+  }
+});
+
+// Token exchange — PKCE-verified swap of the authorization code for an
+// access token the connector will send as a Bearer token on every /mcp call.
+app.post('/mcp/token', (req, res) => {
+  const { code, code_verifier } = req.body;
+  const entry = mcpAuthCodes[code];
+  if (!entry || entry.expires < Date.now()) return res.status(400).json({ error: 'invalid_grant' });
+
+  if (entry.code_challenge) {
+    const computed = b64url(crypto.createHash('sha256').update(code_verifier || '').digest());
+    if (computed !== entry.code_challenge) return res.status(400).json({ error: 'invalid_grant' });
+  }
+
+  const accessToken = crypto.randomBytes(32).toString('hex');
+  mcpTokens[accessToken] = { userId: entry.userId, name: entry.name, email: entry.email };
+  delete mcpAuthCodes[code];
+  res.json({ access_token: accessToken, token_type: 'Bearer' });
+});
+
+function getMcpUser(req) {
+  const auth = req.headers['authorization'] || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  return token ? mcpTokens[token] : null;
+}
+
+// The MCP endpoint itself — JSON-RPC 2.0 over HTTP (Streamable HTTP
+// transport, non-streaming/simple mode). Implements one tool: search_files.
+app.post('/mcp', express.json(), async (req, res) => {
+  const user = getMcpUser(req);
+  const { id, method, params } = req.body || {};
+
+  if (!user && method !== 'initialize') {
+    return res.status(401).json({ jsonrpc:'2.0', id, error:{ code:-32001, message:'Unauthorized' } });
+  }
+
+  if (method === 'initialize') {
+    return res.json({ jsonrpc:'2.0', id, result:{
+      protocolVersion: '2024-11-05',
+      capabilities: { tools: {} },
+      serverInfo: { name: 'moonlight-cloud', version: '1.0.0' }
+    }});
+  }
+
+  if (method === 'notifications/initialized') {
+    return res.status(202).end();
+  }
+
+  if (method === 'tools/list') {
+    return res.json({ jsonrpc:'2.0', id, result:{
+      tools: [{
+        name: 'search_files',
+        description: "Search the signed-in user's Moonlight Cloud files by name (e.g. \"find the photo of the mountain\", \"my resume pdf\"). Returns matching files with their share links.",
+        inputSchema: {
+          type: 'object',
+          properties: { query: { type: 'string', description: 'Search text to match against file names' } },
+          required: ['query']
+        }
+      }]
+    }});
+  }
+
+  if (method === 'tools/call' && params?.name === 'search_files') {
+    const query = (params.arguments?.query || '').toLowerCase();
+    const matches = Object.values(files)
+      .filter(f => f.ownerId === user.userId)
+      .filter(f => !query || f.name.toLowerCase().includes(query))
+      .slice(0, 20)
+      .map(f => ({ name: f.name, size: f.size, uploadedAt: f.uploadedAt, shareUrl: f.shareUrl }));
+
+    const text = matches.length
+      ? matches.map(m => `• ${m.name} (${(m.size/1e6).toFixed(1)} MB) — ${m.shareUrl}`).join('\n')
+      : 'No files matched that search.';
+
+    return res.json({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text }] } });
+  }
+
+  res.status(400).json({ jsonrpc:'2.0', id, error:{ code:-32601, message:'Method not found' } });
 });
 
 // ── Keep forever setting ──────────────────────────────────────────────────────
@@ -258,6 +426,10 @@ app.get('/download/:fileId/raw', (req, res) => {
 
 app.get('/d/:shareId', (req, res) => res.sendFile(path.join(__dirname, 'public', 'download.html')));
 app.get('/download/:fileId', (req, res) => res.sendFile(path.join(__dirname, 'public', 'download.html')));
+
+// ── Mobile app (Android WebView shell) ─────────────────────────────────────────
+app.get('/mobile', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/mobilelogin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mobilelogin.html')));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌙 Moonlight Cloud on port ${PORT}`));

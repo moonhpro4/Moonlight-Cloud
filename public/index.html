@@ -453,6 +453,12 @@ const GB = 1024*1024*1024;
 const GUEST_LIMIT = 20*GB;
 const USER_LIMIT  = 9*1024*GB; // 9 TB free for signed-in users
 
+// True when this page is loaded inside the Moonlight Cloud Android app's
+// WebView (served at /mobile). Google blocks its OAuth widget inside embedded
+// WebViews, so in-app sign-in hands off to a real browser tab (/mobilelogin)
+// and returns here via a URL handoff instead of the GSI JS widget.
+const IS_NATIVE_APP = location.pathname === '/mobile';
+
 let sessionToken  = localStorage.getItem('ml_token') || null;
 let currentUser   = JSON.parse(localStorage.getItem('ml_user') || 'null');
 let keepForeverPref = localStorage.getItem('ml_keepforever') === 'true';
@@ -474,14 +480,38 @@ let ctxFileId     = null;
   }
 })();
 
+// ── NATIVE APP SIGN-IN HANDOFF ─────────────────────────────────────────────────
+// When the Android app receives the deep link back from /mobilelogin, it
+// navigates this WebView to /mobile?token=...&name=...&email=...&picture=...
+// Pick that up here, persist it like a normal login, then clean the URL.
+function consumeNativeHandoff(){
+  const p = new URLSearchParams(location.search);
+  if(!p.get('token')) return false;
+  sessionToken = p.get('token');
+  currentUser  = { name:p.get('name')||'', email:p.get('email')||'', picture:p.get('picture')||'' };
+  localStorage.setItem('ml_token', sessionToken);
+  localStorage.setItem('ml_user', JSON.stringify(currentUser));
+  history.replaceState({}, '', location.pathname);
+  return true;
+}
+
 // ── INIT ──────────────────────────────────────────────────────────────────────
 function init(){
+  if(IS_NATIVE_APP) consumeNativeHandoff();
   if(currentUser && sessionToken){ showDriveView(); }
   else { showGuestView(); initGSI(); }
 }
 
 // ── GOOGLE AUTH ───────────────────────────────────────────────────────────────
 function initGSI(){
+  if(IS_NATIVE_APP){
+    // Inside the app: send the user to a real browser tab to sign in (Google
+    // blocks its sign-in widget inside embedded WebViews), then return here.
+    renderNativeSignInButton('gsiBtn');
+    renderNativeSignInButton('upgradeGSIBtn');
+    refreshQuota();
+    return;
+  }
   if(typeof google==='undefined'){ setTimeout(initGSI,200); return; }
   google.accounts.id.initialize({ client_id:GOOGLE_CLIENT_ID, callback:handleGoogleCb, auto_select:false });
   google.accounts.id.renderButton(document.getElementById('gsiBtn'),{ theme:'filled_black',size:'medium',shape:'pill',text:'signin_with' });
@@ -490,6 +520,21 @@ function initGSI(){
     if(el) google.accounts.id.renderButton(el,{ theme:'filled_black',size:'large',shape:'rectangular',text:'signin_with',width:400 });
   },500);
   refreshQuota();
+}
+
+function renderNativeSignInButton(elId){
+  const el = document.getElementById(elId);
+  if(!el || el.dataset.rendered) return;
+  el.dataset.rendered = '1';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-primary';
+  btn.style.cssText = 'display:flex;align-items:center;gap:8px;justify-content:center;width:100%';
+  btn.innerHTML = '<span style="font-size:1.1rem">G</span> Sign in with Google';
+  btn.onclick = () => {
+    const returnUrl = 'moonlightcloud://auth';
+    location.href = '/mobilelogin?return=' + encodeURIComponent(returnUrl);
+  };
+  el.appendChild(btn);
 }
 
 async function handleGoogleCb(response){

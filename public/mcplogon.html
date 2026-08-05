@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Connect Moonlight Cloud</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{--bg:#0a0c1f;--surface:#12142c;--border:#232544;--text:#f2f3fb;--muted:#9a9dc2;--accent:#8b7cf6}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;padding:24px}
+  .card{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:32px 28px;text-align:center}
+  .logo{font-size:2rem;margin-bottom:6px}
+  h1{font-size:1.2rem;margin:0 0 6px}
+  p{color:var(--muted);font-size:0.85rem;margin:0 0 24px;line-height:1.5}
+  #gsiBtn{display:flex;justify-content:center;margin-bottom:14px}
+  .status{font-size:0.8rem;color:var(--muted);margin-top:16px}
+  .err{color:#ff6b6b}
+  .scope-box{text-align:left;background:rgba(139,124,246,0.08);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:0.78rem;color:var(--muted);margin-bottom:20px}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🌙</div>
+    <h1>Connect to Moonlight Cloud</h1>
+    <p>An AI assistant wants to search your files by name so it can hand you the right link.</p>
+    <div class="scope-box">This lets it <b>search your file names</b> and read their share links. It cannot delete, modify, or upload anything.</div>
+    <div id="gsiBtn"></div>
+    <div class="status" id="status"></div>
+  </div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const flow = params.get('flow');
+const GOOGLE_CLIENT_ID = '216983659910-038e24nvehhll2ef06dqbiijg38v9abm.apps.googleusercontent.com';
+
+function setStatus(msg, isErr){
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status' + (isErr ? ' err' : '');
+}
+
+if (!flow) setStatus('This link is missing information — please restart the connection from Claude/ChatGPT.', true);
+
+function initGSI(){
+  if (typeof google === 'undefined') { setTimeout(initGSI, 200); return; }
+  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleCredential, auto_select:false });
+  google.accounts.id.renderButton(document.getElementById('gsiBtn'), { theme:'filled_black', size:'large', shape:'pill', text:'signin_with', width:280 });
+}
+
+async function handleCredential(response){
+  setStatus('Connecting...');
+  try {
+    const res = await fetch('/mcp/authorize/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flow, credential: response.credential })
+    });
+    const data = await res.json();
+    if (!data.ok) { setStatus(data.error || 'Connection failed.', true); return; }
+    setStatus('Connected as ' + data.name + ' — returning...');
+    location.href = data.redirect;
+  } catch (e) {
+    setStatus('Something went wrong. Please try again.', true);
+  }
+}
+
+if (flow) initGSI();
+</script>
+</body>
+</html>
