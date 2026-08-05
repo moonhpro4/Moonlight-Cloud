@@ -29,7 +29,24 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+        continue-on-error: true
+        id: build
+
+      - name: Save build log on failure
+        if: steps.build.outcome == 'failure'
+        run: |
+          mkdir -p .github/debug
+          tail -n 200 /tmp/build.log > .github/debug/last-build-log.txt
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add .github/debug/last-build-log.txt
+          git commit -m "Save failed Android build log [skip ci]" || true
+          git push || true
+
+      - name: Fail job if build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
 
       - name: Locate APK
         id: apk
