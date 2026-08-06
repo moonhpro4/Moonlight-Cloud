@@ -48,14 +48,25 @@ jobs:
         if: steps.build.outcome == 'failure'
         run: exit 1
 
-      - name: Locate APK
+      - name: Locate and rename APK
         id: apk
         run: |
+          echo "--- contents of debug output dir ---"
+          find android/app/build/outputs -type f -name "*.apk" || true
           APK_PATH=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n1)
-          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Rename APK
-        run: cp "${{ steps.apk.outputs.path }}" moonlight-cloud-debug.apk
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK found." > /tmp/apk-locate.log
+            find android/app/build/outputs -type f >> /tmp/apk-locate.log 2>&1 || true
+            mkdir -p .github/debug
+            cp /tmp/apk-locate.log .github/debug/last-build-log.txt
+            git config user.email "actions@github.com"
+            git config user.name "GitHub Actions"
+            git add .github/debug/last-build-log.txt
+            git commit -m "Save APK-locate failure log [skip ci]" || true
+            git push || true
+            exit 1
+          fi
+          cp "$APK_PATH" moonlight-cloud-debug.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
