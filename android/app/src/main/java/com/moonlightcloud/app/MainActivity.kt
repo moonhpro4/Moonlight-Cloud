@@ -22,7 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
 
     companion object {
-        const val BASE_URL = "https://moonlight-cloud-app-production.up.railway.app"
+        const val BASE_URL = "https://moonlight-cloud-db-production.up.railway.app"
         const val APP_URL = "$BASE_URL/mobile"
         const val LOGIN_PATH = "/mobilelogin"
     }
