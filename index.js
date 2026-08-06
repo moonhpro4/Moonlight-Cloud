@@ -7,39 +7,40 @@ const { OAuth2Client } = require('google-auth-library');
 const cors = require('cors');
 const path = require('path');
 const fs   = require('fs');
-const https = require('https');
 const crypto = require('crypto');
+const store = require('./db');
 
 const app    = express();
 const gClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 if (!fs.existsSync('uploads')) fs.mkdirSync('uploads', { recursive: true });
 
-const files    = {};
-const shares   = {};
-const sessions = {};
-const guestUploads = {};
+// File metadata, sessions, and the keep-forever preference now live in
+// SQLite (./db.js) instead of plain JS objects, so they survive server
+// restarts/redeploys and stay consistent no matter which device you're on.
+// (Note: uploaded file *bytes* under uploads/, and the moonlight.db file
+// itself, are only truly durable if DATA_DIR points at a Railway Volume —
+// otherwise both still reset on redeploy, same as before.)
+
 const activeDownloads = new Set();
-const keepForeverUsers = new Set(); // userIds who set keep forever
 
 // ── MCP (Model Context Protocol) connector state ────────────────────────────
-// Lets Claude / ChatGPT connect to a user's Moonlight Cloud account (via
-// OAuth + Google sign-in at /mcplogon) and search their files by name.
-const mcpClients    = {}; // client_id -> { redirect_uris, client_name }
-const mcpAuthFlows  = {}; // flow id   -> { client_id, redirect_uri, state, code_challenge, code_challenge_method }
-const mcpAuthCodes  = {}; // code      -> { userId, name, email, redirect_uri, code_challenge, expires }
-const mcpTokens     = {}; // access_token -> { userId, name, email }
+// Short-lived OAuth handshake state — fine to keep in memory, codes/flows
+// expire within minutes regardless.
+const mcpClients    = {};
+const mcpAuthFlows  = {};
+const mcpAuthCodes  = {};
+const mcpTokens     = {};
+
 const MAX_CONCURRENT_DL = 2;
 const GB = 1024 * 1024 * 1024;
-const GUEST_MAX_SIZE  = 20 * GB;     // guest (not signed in): 20 GB
-const USER_MAX_SIZE   = 9 * 1024 * GB; // signed in: 9 TB free
-const GUEST_MAX_FILES = 3;
-const FILE_SIZE_HARD  = undefined;   // no single-file size cap (multer: omit fileSize to disable it)
-const DAYS_30 = 30 * 24 * 60 * 60 * 1000;
+const USER_MAX_SIZE     = 9 * 1024 * GB; // signed in: 9 TB free total
+const GUEST_FILE_CAP    = 5 * GB;        // guest: 5 GB per file, no total cap
+const DAYS_7  = 7  * 24 * 60 * 60 * 1000;  // guest files: fixed 7-day, unrecoverable expiry
+const DAYS_30 = 30 * 24 * 60 * 60 * 1000;  // signed-in files: 30-day default, or keep-forever
 
 // ── Dynamic base URL from request ────────────────────────────────────────────
 function getBase(req) {
-  // Trust Railway/proxy forwarded headers
   const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
   const host  = req.headers['x-forwarded-host']  || req.headers['host'] || req.get('host');
   return `${proto}://${host}`;
@@ -50,13 +51,15 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static('public'));
 
 // ── Auto-delete job: runs every hour ─────────────────────────────────────────
+// Guest files are never keep-forever-able (enforced below) and always use the
+// 7-day expiry, so this permanently and irrecoverably deletes them on
+// schedule — no recovery even if the uploader signs in later.
 setInterval(() => {
   const now = Date.now();
-  Object.values(files).forEach(f => {
-    if (!f.keepForever && (now - new Date(f.uploadedAt).getTime()) > DAYS_30) {
+  store.allFiles().forEach(f => {
+    if (!f.keepForever && f.expiresAt && new Date(f.expiresAt).getTime() < now) {
       try { fs.unlinkSync(f.filepath); } catch {}
-      delete shares[f.shareId];
-      delete files[f.id];
+      store.deleteFileRow(f.id);
     }
   });
 }, 60 * 60 * 1000);
@@ -64,17 +67,18 @@ setInterval(() => {
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 function getSession(req) {
   const t = req.headers['x-session-token'];
-  return t ? sessions[t] : null;
+  return t ? store.getSessionRow(t) : null;
 }
 
 function getQuota(session, ip) {
   if (session) {
-    const used  = Object.values(files).filter(f => f.ownerId === session.userId).reduce((a,f) => a+f.size, 0);
-    const count = Object.values(files).filter(f => f.ownerId === session.userId).length;
-    return { used, max: USER_MAX_SIZE, count, maxFiles: Infinity, isGuest: false };
+    const mine = store.filesByOwner(session.userId);
+    const used = mine.reduce((a, f) => a + f.size, 0);
+    return { used, max: USER_MAX_SIZE, count: mine.length, maxFiles: Infinity, isGuest: false };
   }
-  const g = guestUploads[ip] || { count:0, totalSize:0 };
-  return { used: g.totalSize, max: GUEST_MAX_SIZE, count: g.count, maxFiles: GUEST_MAX_FILES, isGuest: true };
+  // Guests: no total/account cap at all — only a per-file size limit,
+  // enforced separately at upload time (GUEST_FILE_CAP).
+  return { used: 0, max: Infinity, count: 0, maxFiles: Infinity, isGuest: true };
 }
 
 // ── Multer ────────────────────────────────────────────────────────────────────
@@ -82,14 +86,19 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename:    (req, file, cb) => { const id = uuidv4(); req.fileId = id; cb(null, id + path.extname(file.originalname)); }
 });
-const upload = multer({ storage, // no limits object: unlimited file size
-  fileFilter: (req, file, cb) => {
-    const session = getSession(req);
-    const quota   = getQuota(session, req.ip);
-    if (quota.isGuest && quota.count >= quota.maxFiles) return cb(new Error('GUEST_LIMIT'));
-    cb(null, true);
+const upload = multer({ storage }); // no global size limit — enforced per-tier below
+
+// Reject oversized guest uploads early, before the body is even read, using
+// the declared Content-Length (browsers always send this for file uploads).
+function guestSizeGate(req, res, next) {
+  const session = getSession(req);
+  if (session) return next();
+  const len = parseInt(req.headers['content-length'] || '0', 10);
+  if (len > GUEST_FILE_CAP + 1_000_000) { // small slack for multipart overhead
+    return res.status(413).json({ ok:false, error:'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
   }
-});
+  next();
+}
 
 // ── MalwareBazaar ─────────────────────────────────────────────────────────────
 app.post('/api/malware-check', async (req, res) => {
@@ -105,15 +114,15 @@ app.post('/api/auth/google', async (req, res) => {
     const ticket  = await gClient.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
     const payload = ticket.getPayload();
     const token   = uuidv4();
-    sessions[token] = { userId: payload.sub, email: payload.email, name: payload.name, picture: payload.picture };
+    store.setSessionRow(token, { userId: payload.sub, email: payload.email, name: payload.name, picture: payload.picture });
     res.json({ ok:true, token, name:payload.name, email:payload.email, picture:payload.picture,
-      keepForever: keepForeverUsers.has(payload.sub) });
+      keepForever: store.getUserKeepForever(payload.sub) });
   } catch { res.status(401).json({ ok:false, error:'Invalid token' }); }
 });
 
 app.post('/api/auth/logout', (req, res) => {
   const t = req.headers['x-session-token'];
-  if (t) delete sessions[t];
+  if (t) store.deleteSessionRow(t);
   res.json({ ok:true });
 });
 
@@ -122,8 +131,6 @@ app.post('/api/auth/logout', (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 function b64url(buf) { return buf.toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
 
-// Authorization Server metadata — what the connector UI reads to discover
-// our authorize/token endpoints and registration support.
 app.get('/.well-known/oauth-authorization-server', (req, res) => {
   const base = getBase(req);
   res.json({
@@ -142,8 +149,6 @@ app.get('/.well-known/oauth-protected-resource', (req, res) => {
   res.json({ resource: `${base}/mcp`, authorization_servers: [base] });
 });
 
-// Dynamic client registration — Claude/ChatGPT self-register the first time
-// a user adds this connector URL.
 app.post('/mcp/register', (req, res) => {
   const clientId = uuidv4();
   mcpClients[clientId] = {
@@ -160,8 +165,6 @@ app.post('/mcp/register', (req, res) => {
   });
 });
 
-// Authorize step — stash the request, send the user to /mcplogon to sign in
-// with Google. This is what shows up when someone adds the connector.
 app.get('/mcp/authorize', (req, res) => {
   const { client_id, redirect_uri, state, code_challenge, code_challenge_method } = req.query;
   if (!redirect_uri) return res.status(400).send('Missing redirect_uri');
@@ -172,9 +175,6 @@ app.get('/mcp/authorize', (req, res) => {
 
 app.get('/mcplogon', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mcplogon.html')));
 
-// Called by /mcplogon after the user completes Google sign-in there. Issues
-// an authorization code and tells the page where to redirect back to
-// (Claude/ChatGPT's own redirect_uri), completing the OAuth handshake.
 app.post('/mcp/authorize/complete', async (req, res) => {
   const { flow, credential } = req.body;
   const pending = mcpAuthFlows[flow];
@@ -198,18 +198,14 @@ app.post('/mcp/authorize/complete', async (req, res) => {
   }
 });
 
-// Token exchange — PKCE-verified swap of the authorization code for an
-// access token the connector will send as a Bearer token on every /mcp call.
 app.post('/mcp/token', (req, res) => {
   const { code, code_verifier } = req.body;
   const entry = mcpAuthCodes[code];
   if (!entry || entry.expires < Date.now()) return res.status(400).json({ error: 'invalid_grant' });
-
   if (entry.code_challenge) {
     const computed = b64url(crypto.createHash('sha256').update(code_verifier || '').digest());
     if (computed !== entry.code_challenge) return res.status(400).json({ error: 'invalid_grant' });
   }
-
   const accessToken = crypto.randomBytes(32).toString('hex');
   mcpTokens[accessToken] = { userId: entry.userId, name: entry.name, email: entry.email };
   delete mcpAuthCodes[code];
@@ -222,8 +218,6 @@ function getMcpUser(req) {
   return token ? mcpTokens[token] : null;
 }
 
-// The MCP endpoint itself — JSON-RPC 2.0 over HTTP (Streamable HTTP
-// transport, non-streaming/simple mode). Implements one tool: search_files.
 app.post('/mcp', express.json(), async (req, res) => {
   const user = getMcpUser(req);
   const { id, method, params } = req.body || {};
@@ -231,132 +225,203 @@ app.post('/mcp', express.json(), async (req, res) => {
   if (!user && method !== 'initialize') {
     return res.status(401).json({ jsonrpc:'2.0', id, error:{ code:-32001, message:'Unauthorized' } });
   }
-
   if (method === 'initialize') {
     return res.json({ jsonrpc:'2.0', id, result:{
-      protocolVersion: '2024-11-05',
-      capabilities: { tools: {} },
+      protocolVersion: '2024-11-05', capabilities: { tools: {} },
       serverInfo: { name: 'moonlight-cloud', version: '1.0.0' }
     }});
   }
-
-  if (method === 'notifications/initialized') {
-    return res.status(202).end();
-  }
+  if (method === 'notifications/initialized') return res.status(202).end();
 
   if (method === 'tools/list') {
     return res.json({ jsonrpc:'2.0', id, result:{
       tools: [{
         name: 'search_files',
         description: "Search the signed-in user's Moonlight Cloud files by name (e.g. \"find the photo of the mountain\", \"my resume pdf\"). Returns matching files with their share links.",
-        inputSchema: {
-          type: 'object',
-          properties: { query: { type: 'string', description: 'Search text to match against file names' } },
-          required: ['query']
-        }
+        inputSchema: { type:'object', properties:{ query:{ type:'string', description:'Search text to match against file names' } }, required:['query'] }
       }]
     }});
   }
-
   if (method === 'tools/call' && params?.name === 'search_files') {
     const query = (params.arguments?.query || '').toLowerCase();
-    const matches = Object.values(files)
-      .filter(f => f.ownerId === user.userId)
+    const matches = store.filesByOwner(user.userId)
       .filter(f => !query || f.name.toLowerCase().includes(query))
       .slice(0, 20)
       .map(f => ({ name: f.name, size: f.size, uploadedAt: f.uploadedAt, shareUrl: f.shareUrl }));
-
     const text = matches.length
       ? matches.map(m => `• ${m.name} (${(m.size/1e6).toFixed(1)} MB) — ${m.shareUrl}`).join('\n')
       : 'No files matched that search.';
-
     return res.json({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text }] } });
   }
-
   res.status(400).json({ jsonrpc:'2.0', id, error:{ code:-32601, message:'Method not found' } });
 });
 
 // ── Keep forever setting ──────────────────────────────────────────────────────
+// Guest uploads can NEVER be kept forever — this requires a real session.
 app.post('/api/settings/keep-forever', (req, res) => {
   const session = getSession(req);
-  if (!session) return res.status(401).json({ ok:false });
-  keepForeverUsers.add(session.userId);
-  // Also update all existing files for this user
-  Object.values(files).filter(f => f.ownerId === session.userId).forEach(f => f.keepForever = true);
+  if (!session) return res.status(401).json({ ok:false, error:'Sign in required.' });
+  store.setUserKeepForever(session.userId, true);
+  store.setAllKeepForeverForOwner(session.userId);
   res.json({ ok:true });
 });
 
 app.get('/api/settings', (req, res) => {
   const session = getSession(req);
   if (!session) return res.json({ keepForever: false });
-  res.json({ keepForever: keepForeverUsers.has(session.userId) });
+  res.json({ keepForever: store.getUserKeepForever(session.userId) });
 });
 
 // ── Quota ─────────────────────────────────────────────────────────────────────
 app.get('/api/quota', (req, res) => res.json(getQuota(getSession(req), req.ip)));
 
+// ── Shared upload-finalize logic (used by both direct upload and by-URL) ────
+function finalizeUpload({ req, filePath, originalname, size, mimetype, hash }, cb) {
+  const session = getSession(req);
+
+  if (!session && size > GUEST_FILE_CAP) {
+    try { fs.unlinkSync(filePath); } catch {}
+    return cb({ status:413, error:'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
+  }
+  if (session) {
+    const quota = getQuota(session, req.ip);
+    if (quota.used + size > quota.max) {
+      try { fs.unlinkSync(filePath); } catch {}
+      return cb({ status:403, error:'You\'re out of storage. Delete some files, or create a new account for another free 9TB.' });
+    }
+  }
+
+  const fileId   = uuidv4();
+  const shareId  = nanoid(8);
+  const base     = getBase(req);
+  const shareUrl = `${base}/d/${shareId}`;
+  const rawUrl   = `${base}/download/${fileId}/raw`;
+  const keepForever = session ? store.getUserKeepForever(session.userId) : false;
+  const expiresAt = keepForever ? null
+    : new Date(Date.now() + (session ? DAYS_30 : DAYS_7)).toISOString();
+
+  const finalPath = path.join('uploads', fileId + path.extname(originalname));
+  fs.renameSync(filePath, finalPath);
+
+  store.insertFile({
+    id: fileId, shareId, name: originalname, size, mimetype, hash: hash || null,
+    owner: session ? session.name : 'Guest',
+    ownerId: session ? session.userId : req.ip,
+    uploadedAt: new Date().toISOString(),
+    filepath: finalPath, shareUrl, keepForever, expiresAt,
+    isGuest: !session
+  });
+
+  const commands = {
+    windows: `Invoke-WebRequest -Uri "${rawUrl}" -OutFile "${originalname}"`,
+    mac:     `curl -L "${rawUrl}" -o "${originalname}"`,
+    linux:   `wget -O "${originalname}" "${rawUrl}"`
+  };
+  cb(null, { fileId, shareId, name: originalname, size, shareUrl, rawUrl, commands, keepForever, expiresAt });
+}
+
 // ── Upload ────────────────────────────────────────────────────────────────────
-app.post('/api/upload', (req, res) => {
+app.post('/api/upload', guestSizeGate, (req, res) => {
   upload.single('file')(req, res, err => {
-    if (err) {
-      if (err.message === 'GUEST_LIMIT') return res.status(403).json({ ok:false, error:'Guest upload limit reached. Sign in with Google for more.' });
-      return res.status(400).json({ ok:false, error:err.message });
-    }
+    if (err) return res.status(400).json({ ok:false, error: err.message });
     if (!req.file) return res.status(400).json({ ok:false, error:'No file received' });
-    const session = getSession(req);
-    const quota   = getQuota(session, req.ip);
-    if (quota.used + req.file.size > quota.max) {
-      fs.unlinkSync(req.file.path);
-      return res.status(403).json({ ok:false, error: quota.isGuest ? 'Storage limit reached. Sign in for more.' : 'Quota exceeded.' });
+    finalizeUpload({
+      req, filePath: req.file.path, originalname: req.file.originalname,
+      size: req.file.size, mimetype: req.file.mimetype, hash: req.body.hash
+    }, (err, result) => {
+      if (err) return res.status(err.status).json({ ok:false, error: err.error });
+      res.json({ ok:true, ...result });
+    });
+  });
+});
+
+// ── Download by URL ───────────────────────────────────────────────────────────
+// Fetches a direct file link server-side and drops it straight into the
+// user's cloud storage — nothing touches the requester's device.
+app.post('/api/upload-from-url', async (req, res) => {
+  const { url } = req.body || {};
+  if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ ok:false, error:'Please provide a valid http(s) URL.' });
+
+  const session = getSession(req);
+  const cap = session ? getQuota(session, req.ip).max - getQuota(session, req.ip).used : GUEST_FILE_CAP;
+
+  let upstream;
+  try {
+    upstream = await fetch(url, { redirect: 'follow' });
+  } catch {
+    return res.status(400).json({ ok:false, error:'Could not reach that URL.' });
+  }
+  if (!upstream.ok || !upstream.body) {
+    return res.status(400).json({ ok:false, error:`That URL returned an error (${upstream.status}).` });
+  }
+
+  const declaredLen = parseInt(upstream.headers.get('content-length') || '0', 10);
+  if (declaredLen && declaredLen > cap) {
+    return res.status(413).json({ ok:false, error: session ? 'That file is larger than your remaining storage.' : 'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
+  }
+
+  let originalname = 'download';
+  try {
+    const u = new URL(url);
+    originalname = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || 'download');
+  } catch {}
+  const disposition = upstream.headers.get('content-disposition');
+  const m = disposition && disposition.match(/filename="?([^";]+)"?/i);
+  if (m) originalname = m[1];
+
+  const tmpId = uuidv4();
+  const tmpPath = path.join('uploads', 'tmp-' + tmpId);
+  const writeStream = fs.createWriteStream(tmpPath);
+  let bytesWritten = 0;
+  let aborted = false;
+
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesWritten += value.length;
+      if (bytesWritten > cap) {
+        aborted = true;
+        try { reader.cancel(); } catch {}
+        break;
+      }
+      writeStream.write(Buffer.from(value));
     }
-    const fileId  = req.fileId || path.basename(req.file.filename, path.extname(req.file.filename));
-    const shareId = nanoid(8);
-    const base    = getBase(req);
-    const shareUrl = `${base}/d/${shareId}`;
-    const rawUrl   = `${base}/download/${fileId}/raw`;
-    const keepForever = session ? keepForeverUsers.has(session.userId) : false;
-    const record = {
-      id: fileId, shareId, name: req.file.originalname, size: req.file.size,
-      mimetype: req.file.mimetype, hash: req.body.hash || null,
-      owner: session ? session.name : 'Guest',
-      ownerId: session ? session.userId : req.ip,
-      uploadedAt: new Date().toISOString(),
-      filepath: req.file.path, shareUrl, keepForever,
-      expiresAt: keepForever ? null : new Date(Date.now() + DAYS_30).toISOString()
-    };
-    files[fileId]   = record;
-    shares[shareId] = fileId;
-    if (!session) {
-      if (!guestUploads[req.ip]) guestUploads[req.ip] = { count:0, totalSize:0 };
-      guestUploads[req.ip].count++;
-      guestUploads[req.ip].totalSize += req.file.size;
-    }
-    const commands = {
-      windows: `Invoke-WebRequest -Uri "${rawUrl}" -OutFile "${req.file.originalname}"`,
-      mac:     `curl -L "${rawUrl}" -o "${req.file.originalname}"`,
-      linux:   `wget -O "${req.file.originalname}" "${rawUrl}"`
-    };
-    res.json({ ok:true, fileId, shareId, name:req.file.originalname, size:req.file.size,
-      shareUrl, rawUrl, commands, keepForever, expiresAt: record.expiresAt });
+  } catch {
+    aborted = true;
+  }
+  writeStream.end();
+
+  if (aborted) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return res.status(413).json({ ok:false, error: session ? 'That file is larger than your remaining storage.' : 'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
+  }
+
+  finalizeUpload({
+    req, filePath: tmpPath, originalname, size: bytesWritten,
+    mimetype: upstream.headers.get('content-type') || 'application/octet-stream'
+  }, (err, result) => {
+    if (err) return res.status(err.status).json({ ok:false, error: err.error });
+    res.json({ ok:true, ...result });
   });
 });
 
 // ── Keep forever for specific file ───────────────────────────────────────────
+// Requires a real session — guest files can never be marked keep-forever.
 app.post('/api/file/:fileId/keep-forever', (req, res) => {
   const session = getSession(req);
-  const file    = files[req.params.fileId];
+  if (!session) return res.status(403).json({ ok:false, error:'Sign in required.' });
+  const file = store.getFile(req.params.fileId);
   if (!file) return res.status(404).json({ ok:false });
-  const ownerId = session ? session.userId : req.ip;
-  if (file.ownerId !== ownerId) return res.status(403).json({ ok:false });
-  file.keepForever = true;
-  file.expiresAt   = null;
+  if (file.ownerId !== session.userId) return res.status(403).json({ ok:false });
+  store.updateFile(file.id, { keepForever: true, expiresAt: null });
   res.json({ ok:true });
 });
 
 // ── Share page ────────────────────────────────────────────────────────────────
 app.get('/api/share/:shareId', (req, res) => {
-  const fileId = shares[req.params.shareId];
-  const file   = fileId ? files[fileId] : null;
+  const file = store.getFileByShare(req.params.shareId);
   if (!file) return res.status(404).json({ ok:false, error:'Not found' });
   const base   = getBase(req);
   const rawUrl = `${base}/download/${file.id}/raw`;
@@ -382,16 +447,13 @@ app.post('/api/dl-end/:shareId', (req, res) => { activeDownloads.delete(req.para
 // ── My files ──────────────────────────────────────────────────────────────────
 app.get('/api/my-files', (req, res) => {
   const session = getSession(req);
-  const ownerId = session ? session.userId : req.ip;
-  const userFiles = Object.values(files)
-    .filter(f => f.ownerId === ownerId)
-    .map(f => ({ id:f.id, shareId:f.shareId, shareUrl:f.shareUrl, name:f.name,
-      size:f.size, uploadedAt:f.uploadedAt, keepForever:f.keepForever, expiresAt:f.expiresAt }));
-  res.json({ ok:true, files:userFiles });
+  const mine = session ? store.filesByOwner(session.userId) : store.filesByOwner(req.ip);
+  res.json({ ok:true, files: mine.map(f => ({ id:f.id, shareId:f.shareId, shareUrl:f.shareUrl, name:f.name,
+    size:f.size, uploadedAt:f.uploadedAt, keepForever:f.keepForever, expiresAt:f.expiresAt })) });
 });
 
 app.get('/api/file/:fileId', (req, res) => {
-  const file = files[req.params.fileId];
+  const file = store.getFile(req.params.fileId);
   if (!file) return res.status(404).json({ ok:false, error:'Not found' });
   const base   = getBase(req);
   const rawUrl = `${base}/download/${file.id}/raw`;
@@ -404,18 +466,17 @@ app.get('/api/file/:fileId', (req, res) => {
 
 app.delete('/api/file/:fileId', (req, res) => {
   const session = getSession(req);
-  const file    = files[req.params.fileId];
+  const file    = store.getFile(req.params.fileId);
   if (!file) return res.status(404).json({ ok:false, error:'Not found' });
   const ownerId = session ? session.userId : req.ip;
   if (file.ownerId !== ownerId) return res.status(403).json({ ok:false, error:'Not your file' });
   try { fs.unlinkSync(file.filepath); } catch {}
-  delete shares[file.shareId];
-  delete files[req.params.fileId];
+  store.deleteFileRow(file.id);
   res.json({ ok:true });
 });
 
 app.get('/download/:fileId/raw', (req, res) => {
-  const file = files[req.params.fileId];
+  const file = store.getFile(req.params.fileId);
   if (!file) return res.status(404).send('Not found');
   res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
   res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
