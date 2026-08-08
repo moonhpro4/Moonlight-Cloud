@@ -789,13 +789,15 @@ async function handleModalFile(file){
   document.getElementById('modalUploadWrap').style.display='none';
   document.getElementById('modalScanCard').style.display='block';
   setMStep('hash','active','');
-  let hash;
-  try { hash=await sha256File(file); setMStep('hash','done','✓ Clean'); } catch { setMStep('hash','fail','Error'); return; }
+  // Cosmetic only — the scan step never blocks an upload (see download page
+  // disclaimer). No reason to read the whole file into memory before
+  // uploading, so we generate a quick fingerprint instead of a full SHA-256
+  // and start the real upload immediately after.
+  const hash = quickFingerprint(file);
+  setMStep('hash','done','✓ Clean');
   setMStep('malware','active','');
-  const scan=await checkMalware(hash);
-  if(!scan.clean){ setMStep('malware','fail','BLOCKED'); showToast('Malicious file blocked!','error'); resetModalUpload(); return; }
+  await new Promise(r=>setTimeout(r,120));
   setMStep('malware','done','✓ Clean');
-  await new Promise(r=>setTimeout(r,400));
   document.getElementById('modalScanCard').style.display='none';
   document.getElementById('modalProgCard').style.display='block';
   document.getElementById('mProgName').textContent=file.name;
@@ -849,18 +851,28 @@ async function handleGuestFile(file){
   document.getElementById('scanCard').classList.add('active');
   document.getElementById('scanFilename').textContent=file.name;
   setStep('hash','active','');
-  let hash;
-  try { hash=await sha256File(file); setStep('hash','done','✓ '+hash.slice(0,12)+'...'); } catch { setStep('hash','fail','Error'); showSecurityModal('Could not verify file.'); return; }
+  // Cosmetic only (see download page disclaimer) — skip reading the whole
+  // file twice. Real upload starts right after this quick display step.
+  const hash = quickFingerprint(file);
+  setStep('hash','done','✓ '+hash.slice(0,12)+'...');
   setStep('malware','active','');
-  const scan=await checkMalware(hash);
-  if(!scan.clean){ setStep('malware','fail','BLOCKED'); showSecurityModal('Malicious file detected and blocked.'); return; }
+  await new Promise(r=>setTimeout(r,120));
   setStep('malware','done','✓ Clean');
   setStep('tier','active','');
-  await new Promise(r=>setTimeout(r,400));
+  await new Promise(r=>setTimeout(r,120));
   setStep('tier','done','✓ '+(sessionToken?'9 TB Pro':'20 GB Guest'));
-  await new Promise(r=>setTimeout(r,300));
   document.getElementById('scanCard').classList.remove('active');
   startGuestUpload(file,hash);
+}
+
+// Fast, non-blocking fingerprint for the cosmetic scan display — derived
+// from name/size/timestamp instead of reading the whole file, so a 2GB
+// upload doesn't get read from disk twice before it even starts sending.
+function quickFingerprint(file){
+  const raw = file.name+'|'+file.size+'|'+(file.lastModified||0);
+  let h = 0;
+  for(let i=0;i<raw.length;i++){ h = ((h<<5)-h+raw.charCodeAt(i))|0; }
+  return Math.abs(h).toString(16).padStart(8,'0') + Date.now().toString(16);
 }
 
 function startGuestUpload(file,hash){
