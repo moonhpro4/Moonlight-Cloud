@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 // Store the DB under DATA_DIR if set (point this at a Railway Volume mount
 // path, e.g. /data, for real persistence across restarts/redeploys). Falls
@@ -85,10 +86,59 @@ function setAllKeepForeverForOwner(ownerId) {
   db.prepare('UPDATE files SET keepForever = 1, expiresAt = NULL WHERE ownerId = ?').run(ownerId);
 }
 
+// ── Moonlight AI conversations ──────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_conversations (
+    id TEXT PRIMARY KEY,
+    userId TEXT NOT NULL,
+    title TEXT,
+    createdAt TEXT, updatedAt TEXT
+  );
+  CREATE TABLE IF NOT EXISTS ai_messages (
+    id TEXT PRIMARY KEY,
+    conversationId TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    createdAt TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ai_conv_user ON ai_conversations(userId);
+  CREATE INDEX IF NOT EXISTS idx_ai_msg_conv ON ai_messages(conversationId);
+`);
+
+function createConversation(userId, title) {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO ai_conversations (id, userId, title, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)')
+    .run(id, userId, title, now, now);
+  return id;
+}
+function touchConversation(id) {
+  db.prepare('UPDATE ai_conversations SET updatedAt = ? WHERE id = ?').run(new Date().toISOString(), id);
+}
+function getConversation(id) { return db.prepare('SELECT * FROM ai_conversations WHERE id = ?').get(id); }
+function listConversations(userId) {
+  return db.prepare('SELECT id, title, createdAt, updatedAt FROM ai_conversations WHERE userId = ? ORDER BY updatedAt DESC').all(userId);
+}
+function addMessage(conversationId, role, content) {
+  const id = crypto.randomUUID();
+  db.prepare('INSERT INTO ai_messages (id, conversationId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')
+    .run(id, conversationId, role, content, new Date().toISOString());
+  touchConversation(conversationId);
+}
+function getMessages(conversationId) {
+  return db.prepare('SELECT role, content, createdAt FROM ai_messages WHERE conversationId = ? ORDER BY createdAt ASC').all(conversationId);
+}
+function deleteConversation(id) {
+  db.prepare('DELETE FROM ai_messages WHERE conversationId = ?').run(id);
+  db.prepare('DELETE FROM ai_conversations WHERE id = ?').run(id);
+}
+
 module.exports = {
   db,
   getUserKeepForever, setUserKeepForever,
   getSessionRow, setSessionRow, deleteSessionRow,
   getFile, getFileByShare, allFiles, filesByOwner,
-  insertFile, updateFile, deleteFileRow, setAllKeepForeverForOwner
+  insertFile, updateFile, deleteFileRow, setAllKeepForeverForOwner,
+  createConversation, touchConversation, getConversation, listConversations,
+  addMessage, getMessages, deleteConversation
 };

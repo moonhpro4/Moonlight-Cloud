@@ -492,5 +492,91 @@ app.get('/download/:fileId', (req, res) => res.sendFile(path.join(__dirname, 'pu
 app.get('/mobile', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/mobilelogin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mobilelogin.html')));
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Moonlight AI — chat assistant. The API token lives only in this server's
+// environment (MOONLIGHT_AI_TOKEN) and is never sent to the browser; the
+// client only ever talks to our own /api/ai/* routes.
+// ═══════════════════════════════════════════════════════════════════════════
+const AI_API_URL = process.env.MOONLIGHT_AI_API_URL;
+const AI_TOKEN    = process.env.MOONLIGHT_AI_TOKEN;
+
+// Real warmup call — the underlying model endpoint can have a cold start, so
+// this is an actual first round-trip to the API (not a cosmetic delay) that
+// the client waits on before enabling the chat input.
+app.get('/api/ai/warmup', async (req, res) => {
+  if (!AI_API_URL || !AI_TOKEN) return res.status(503).json({ ok:false, error:'AI is not configured on this server yet.' });
+  try {
+    const r = await fetch(AI_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${AI_TOKEN}` },
+      body: JSON.stringify({ messages: [{ role:'system', content:'ping' }] })
+    });
+    res.json({ ok: true, warm: r.status < 500 });
+  } catch {
+    res.status(503).json({ ok:false, error:'Could not reach the AI service.' });
+  }
+});
+
+app.get('/api/ai/conversations', (req, res) => {
+  const session = getSession(req);
+  if (!session) return res.json({ ok:true, conversations: [] }); // guests: not persisted
+  res.json({ ok:true, conversations: store.listConversations(session.userId) });
+});
+
+app.get('/api/ai/conversations/:id', (req, res) => {
+  const session = getSession(req);
+  const convo = store.getConversation(req.params.id);
+  if (!convo || !session || convo.userId !== session.userId) return res.status(404).json({ ok:false, error:'Not found' });
+  res.json({ ok:true, messages: store.getMessages(convo.id) });
+});
+
+app.delete('/api/ai/conversations/:id', (req, res) => {
+  const session = getSession(req);
+  const convo = store.getConversation(req.params.id);
+  if (!convo || !session || convo.userId !== session.userId) return res.status(404).json({ ok:false, error:'Not found' });
+  store.deleteConversation(convo.id);
+  res.json({ ok:true });
+});
+
+app.post('/api/ai/chat', async (req, res) => {
+  if (!AI_API_URL || !AI_TOKEN) return res.status(503).json({ ok:false, error:'AI is not configured on this server yet.' });
+  const session = getSession(req);
+  const { message, conversationId } = req.body || {};
+  if (!message || !message.trim()) return res.status(400).json({ ok:false, error:'Empty message.' });
+
+  let convoId = conversationId;
+  let history = [];
+  if (session) {
+    if (convoId) {
+      const convo = store.getConversation(convoId);
+      if (!convo || convo.userId !== session.userId) return res.status(404).json({ ok:false, error:'Conversation not found' });
+      history = store.getMessages(convoId).map(m => ({ role:m.role, content:m.content }));
+    } else {
+      convoId = store.createConversation(session.userId, message.trim().slice(0, 60));
+    }
+    store.addMessage(convoId, 'user', message);
+  }
+
+  try {
+    const r = await fetch(AI_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${AI_TOKEN}` },
+      body: JSON.stringify({ messages: [...history, { role:'user', content: message }] })
+    });
+    const data = await r.json().catch(() => ({}));
+    // Best-effort extraction — adjust here once the exact response shape of
+    // the connected AI backend is confirmed.
+    const reply = data.reply || data.message || data.content
+      || data.choices?.[0]?.message?.content
+      || (typeof data === 'string' ? data : null);
+    if (!reply) return res.status(502).json({ ok:false, error:'Unexpected response from AI service.', raw:data });
+
+    if (session) store.addMessage(convoId, 'assistant', reply);
+    res.json({ ok:true, reply, conversationId: convoId || null });
+  } catch {
+    res.status(502).json({ ok:false, error:'Could not reach the AI service.' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌙 Moonlight Cloud on port ${PORT}`));

@@ -249,9 +249,44 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
   .upload-zone{padding:40px 20px}
   .phase-card,.result-card{padding:24px 20px}
 }
+
+/* ── Moonlight AI window ──────────────────────────────────────────────── */
+#aiWindow{position:fixed;bottom:20px;right:20px;width:380px;height:520px;background:var(--surface);border:1px solid var(--border2);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.5);display:none;flex-direction:column;overflow:hidden;z-index:200;transition:all 0.2s ease}
+#aiWindow.active{display:flex}
+#aiWindow.fullscreen{top:0;left:0;right:0;bottom:0;width:100%;height:100%;border-radius:0}
+.ai-header{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.ai-header .ai-logo-mark{width:22px;height:22px}
+.ai-header .ai-title{font-weight:700;flex:1}
+.ai-header button{background:transparent;border:none;color:var(--muted2);cursor:pointer;font-size:1.1rem;width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center}
+.ai-header button:hover{background:var(--surface2);color:var(--text)}
+.ai-body{flex:1;display:flex;overflow:hidden;position:relative}
+.ai-loading{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--surface);z-index:2}
+.ai-loading .ai-logo-mark{width:44px;height:44px;animation:aiPulse 1.4s ease-in-out infinite}
+@keyframes aiPulse{0%,100%{opacity:0.5;transform:scale(0.92)}50%{opacity:1;transform:scale(1)}}
+.ai-loading-text{color:var(--muted2);font-size:0.85rem}
+.ai-history{width:0;overflow:hidden;border-right:1px solid var(--border);transition:width 0.2s ease;flex-shrink:0}
+.ai-history.open{width:170px}
+.ai-history-inner{width:170px;padding:10px;overflow-y:auto;height:100%}
+.ai-history-item{padding:8px 10px;border-radius:8px;font-size:0.78rem;color:var(--muted2);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+.ai-history-item:hover{background:var(--surface2);color:var(--text)}
+.ai-chat-col{flex:1;display:flex;flex-direction:column;min-width:0}
+.ai-messages{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+.ai-msg{max-width:85%;padding:9px 12px;border-radius:12px;font-size:0.85rem;line-height:1.45;white-space:pre-wrap}
+.ai-msg.user{align-self:flex-end;background:var(--accent);color:#fff}
+.ai-msg.assistant{align-self:flex-start;background:var(--surface2);color:var(--text)}
+.ai-input-row{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border);flex-shrink:0}
+.ai-input-row input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:0.85rem}
+.ai-input-row button{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:0 16px;cursor:pointer;font-weight:600}
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="aiLogo" viewBox="0 0 32 32">
+    <path fill="#8b7cf6" d="M19 6c-1 0-2 .1-2.8.4 3.8 1.6 6.6 5.3 6.6 9.6s-2.8 8-6.6 9.6c.8.3 1.8.4 2.8.4 5.6 0 10-4.4 10-10S24.6 6 19 6z"/>
+    <path fill="#8b7cf6" d="M9 5l1.1 2.9L13 9l-2.9 1.1L9 13l-1.1-2.9L5 9l2.9-1.1L9 5z"/>
+  </symbol>
+</svg>
+<style>.ai-logo-mark svg,.ai-logo-mark{width:100%;height:100%}</style>
 <div class="starfield" id="sf"></div>
 <div class="nebula n1"></div><div class="nebula n2"></div>
 
@@ -347,6 +382,9 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
     <div class="drive-sidebar" id="driveSidebar">
       <button class="sidebar-new-btn" onclick="openUploadModal();if(window.innerWidth<=768)toggleSidebar(false)"><span>＋</span> New Upload</button>
       <button class="sidebar-new-btn" onclick="openUrlUploadModal();if(window.innerWidth<=768)toggleSidebar(false)" style="margin-bottom:20px"><span>🌐</span> Download by URL</button>
+      <button class="sidebar-new-btn" onclick="openAiWindow();if(window.innerWidth<=768)toggleSidebar(false)" style="margin-bottom:20px">
+        <span class="ai-logo-mark" style="width:18px;height:18px;display:inline-flex"><svg viewBox="0 0 32 32"><use href="#aiLogo"/></svg></span> Moonlight AI
+      </button>
       <a class="sidebar-item active" id="sb-myfiles" onclick="setSection('myfiles')"><span class="si-icon">🗂</span> My Files</a>
       <a class="sidebar-item" id="sb-recent" onclick="setSection('recent')"><span class="si-icon">🕐</span> Recent</a>
       <a class="sidebar-item" id="sb-shared" onclick="setSection('shared')"><span class="si-icon">🔗</span> Shared Links</a>
@@ -462,6 +500,33 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 </div>
 
 <div class="toast" id="toast"></div>
+
+<div id="aiWindow">
+  <div class="ai-header">
+    <button onclick="toggleAiHistory()" title="Conversation history">☰</button>
+    <span class="ai-logo-mark"><svg viewBox="0 0 32 32"><use href="#aiLogo"/></svg></span>
+    <span class="ai-title">Moonlight AI</span>
+    <button onclick="newAiChat()" title="New chat">＋</button>
+    <button onclick="toggleAiFullscreen()" id="aiFullscreenBtn" title="Toggle fullscreen">⤢</button>
+    <button onclick="closeAiWindow()" title="Close">✕</button>
+  </div>
+  <div class="ai-body">
+    <div class="ai-loading" id="aiLoading">
+      <span class="ai-logo-mark"><svg viewBox="0 0 32 32"><use href="#aiLogo"/></svg></span>
+      <div class="ai-loading-text" id="aiLoadingText">Loading AI…</div>
+    </div>
+    <div class="ai-history" id="aiHistory">
+      <div class="ai-history-inner" id="aiHistoryInner"></div>
+    </div>
+    <div class="ai-chat-col">
+      <div class="ai-messages" id="aiMessages"></div>
+      <div class="ai-input-row">
+        <input type="text" id="aiInput" placeholder="Ask Moonlight AI..." onkeydown="if(event.key==='Enter')sendAiMessage()"/>
+        <button onclick="sendAiMessage()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 const GOOGLE_CLIENT_ID = '216983659910-038e24nvehhll2ef06dqbiijg38v9abm.apps.googleusercontent.com';
@@ -1015,6 +1080,111 @@ function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 let toastT; function showToast(msg,type=''){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show '+type; clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),3500); }
 
 init();
+
+// ── Moonlight AI ──────────────────────────────────────────────────────────
+let aiWarmed = false;
+let aiConversationId = null;
+
+async function openAiWindow(){
+  document.getElementById('aiWindow').classList.add('active');
+  if(aiWarmed) return;
+  const loading = document.getElementById('aiLoading');
+  const loadingText = document.getElementById('aiLoadingText');
+  loading.style.display='flex';
+  loadingText.textContent='Loading AI…';
+  await new Promise(r=>setTimeout(r,300));
+  loadingText.textContent='Preparing AI…';
+  await new Promise(r=>setTimeout(r,300));
+  loadingText.textContent='Loading API…';
+  // Real warmup call — the model backend can have a cold start, so we
+  // actually wait on it here rather than faking the delay.
+  try {
+    const headers = sessionToken ? {'x-session-token':sessionToken} : {};
+    await fetch('/api/ai/warmup', { headers });
+  } catch {}
+  aiWarmed = true;
+  loading.style.display='none';
+}
+
+function closeAiWindow(){ document.getElementById('aiWindow').classList.remove('active'); }
+
+function toggleAiFullscreen(){
+  const w = document.getElementById('aiWindow');
+  w.classList.toggle('fullscreen');
+  document.getElementById('aiFullscreenBtn').textContent = w.classList.contains('fullscreen') ? '⤡' : '⤢';
+}
+
+async function toggleAiHistory(){
+  const h = document.getElementById('aiHistory');
+  h.classList.toggle('open');
+  if(!h.classList.contains('open')) return;
+  const inner = document.getElementById('aiHistoryInner');
+  inner.innerHTML = 'Loading...';
+  try {
+    const headers = sessionToken ? {'x-session-token':sessionToken} : {};
+    const res = await fetch('/api/ai/conversations', { headers });
+    const data = await res.json();
+    if(!data.conversations.length){ inner.innerHTML = sessionToken ? '<div class="ai-history-item">No conversations yet</div>' : '<div class="ai-history-item">Sign in to save chats</div>'; return; }
+    inner.innerHTML = data.conversations.map(c =>
+      `<div class="ai-history-item" onclick="loadAiConversation('${c.id}')">${esc(c.title||'Untitled')}</div>`
+    ).join('');
+  } catch { inner.innerHTML = '<div class="ai-history-item">Failed to load</div>'; }
+}
+
+async function loadAiConversation(id){
+  aiConversationId = id;
+  const box = document.getElementById('aiMessages');
+  box.innerHTML = 'Loading...';
+  try {
+    const headers = sessionToken ? {'x-session-token':sessionToken} : {};
+    const res = await fetch('/api/ai/conversations/'+id, { headers });
+    const data = await res.json();
+    box.innerHTML = '';
+    (data.messages||[]).forEach(m => appendAiMessage(m.role, m.content));
+  } catch { box.innerHTML = ''; }
+}
+
+function newAiChat(){
+  aiConversationId = null;
+  document.getElementById('aiMessages').innerHTML = '';
+}
+
+function appendAiMessage(role, content){
+  const box = document.getElementById('aiMessages');
+  const div = document.createElement('div');
+  div.className = 'ai-msg '+role;
+  div.textContent = content;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendAiMessage(){
+  const input = document.getElementById('aiInput');
+  const message = input.value.trim();
+  if(!message) return;
+  input.value = '';
+  appendAiMessage('user', message);
+  const thinking = document.createElement('div');
+  thinking.className = 'ai-msg assistant';
+  thinking.textContent = '...';
+  document.getElementById('aiMessages').appendChild(thinking);
+
+  try {
+    const headers = {'Content-Type':'application/json'};
+    if(sessionToken) headers['x-session-token'] = sessionToken;
+    const res = await fetch('/api/ai/chat', { method:'POST', headers,
+      body: JSON.stringify({ message, conversationId: aiConversationId }) });
+    const data = await res.json();
+    thinking.remove();
+    if(!data.ok){ appendAiMessage('assistant', data.error || 'Something went wrong.'); return; }
+    if(data.conversationId) aiConversationId = data.conversationId;
+    appendAiMessage('assistant', data.reply);
+  } catch {
+    thinking.remove();
+    appendAiMessage('assistant', 'Could not reach Moonlight AI. Please try again.');
+  }
+}
+
 </script>
 </body>
 </html>
