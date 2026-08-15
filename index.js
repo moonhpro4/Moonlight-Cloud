@@ -486,6 +486,18 @@ app.get('/download/:fileId/raw', (req, res) => {
 });
 
 app.get('/d/:shareId', (req, res) => res.sendFile(path.join(__dirname, 'public', 'download.html')));
+
+// Direct link — zero UI, no download page, no confirmation. Hitting this URL
+// starts the browser's download immediately.
+app.get('/d/:shareId/direct', (req, res) => {
+  const file = store.getFileByShare(req.params.shareId);
+  if (!file) return res.status(404).send('Not found');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
+  res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+  res.setHeader('Content-Length', file.size);
+  res.setHeader('Accept-Ranges', 'bytes');
+  fs.createReadStream(file.filepath).pipe(res);
+});
 app.get('/download/:fileId', (req, res) => res.sendFile(path.join(__dirname, 'public', 'download.html')));
 
 // ── Mobile app (Android WebView shell) ─────────────────────────────────────────

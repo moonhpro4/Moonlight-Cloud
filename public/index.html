@@ -494,6 +494,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
 <!-- Context menu -->
 <div class="ctx-menu" id="ctxMenu">
   <div class="ctx-item" onclick="ctxAction('share')">🔗 Copy share link</div>
+  <div class="ctx-item" onclick="ctxAction('directlink')">⚡ Copy direct link</div>
   <div class="ctx-item" onclick="ctxAction('download')">⬇ Download</div>
   <div class="ctx-item" onclick="ctxAction('keepforever')">♾ Keep Forever</div>
   <div class="ctx-item danger" onclick="ctxAction('delete')">🗑 Delete</div>
@@ -813,6 +814,7 @@ function renderList(files,container){
 function setView(v){ currentView=v; document.getElementById('gridViewBtn').classList.toggle('active',v==='grid'); document.getElementById('listViewBtn').classList.toggle('active',v==='list'); renderSection(); }
 function openFile(id){ const f=allFiles.find(x=>x.id===id); if(f&&f.shareUrl) window.open(f.shareUrl,'_blank'); }
 async function copyFileLink(id){ const f=allFiles.find(x=>x.id===id); if(f&&f.shareUrl){ await navigator.clipboard.writeText(f.shareUrl); showToast('Link copied!','success'); } }
+async function copyDirectLink(id){ const f=allFiles.find(x=>x.id===id); if(f&&f.shareUrl){ await navigator.clipboard.writeText(f.shareUrl+'/direct'); showToast('Direct link copied — opens with an instant download, no page','success'); } }
 async function keepForeverFile(id){
   const res=await fetch('/api/file/'+id+'/keep-forever',{method:'POST',headers:{'x-session-token':sessionToken}});
   const data=await res.json();
@@ -826,6 +828,7 @@ function ctxAction(action){
   document.getElementById('ctxMenu').classList.remove('active');
   const f=allFiles.find(x=>x.id===ctxFileId);
   if(action==='share') copyFileLink(ctxFileId);
+  else if(action==='directlink') copyDirectLink(ctxFileId);
   else if(action==='download'&&f){ const a=document.createElement('a');a.href='/download/'+ctxFileId+'/raw';a.download=f.name;a.click(); }
   else if(action==='keepforever') keepForeverFile(ctxFileId);
   else if(action==='delete') deleteFile(ctxFileId);
