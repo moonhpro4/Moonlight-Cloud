@@ -218,6 +218,14 @@ function getMcpUser(req) {
   return token ? mcpTokens[token] : null;
 }
 
+// Per the MCP Streamable HTTP spec, GET on this endpoint is for opening an
+// optional server-initiated SSE stream. This server doesn't push
+// unsolicited messages, so it correctly responds 405 (not a raw 404) —
+// clients should use POST for all requests.
+app.get('/mcp', (req, res) => {
+  res.status(405).set('Allow', 'POST').json({ error: 'Method Not Allowed — this MCP server only accepts POST JSON-RPC requests.' });
+});
+
 app.post('/mcp', express.json(), async (req, res) => {
   const user = getMcpUser(req);
   const { id, method, params } = req.body || {};
