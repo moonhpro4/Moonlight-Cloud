@@ -1,25 +1,36 @@
 package com.moonlightcloud.app
 
+import android.app.Activity
 import android.app.DownloadManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.webkit.CookieManager
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.browser.customtabs.CustomTabsIntent
 
 // Moonlight Cloud runs entirely inside this WebView, pointed at the site's
-// /mobile route. The one thing that can't happen inside a WebView is Google
-// sign-in — Google blocks its OAuth flow inside embedded WebViews — so that
-// one step briefly opens a real Chrome Custom Tab (/mobilelogin) and hands the
-// finished session back here via a moonlightcloud://auth deep link.
+// /mobile route. Two things can't happen inside a plain WebView by default,
+// and need explicit wiring here: (1) Google sign-in — Google blocks its
+// OAuth flow inside embedded WebViews, so that step briefly opens a real
+// Chrome Custom Tab (/mobilelogin) and hands the finished session back via a
+// moonlightcloud://auth deep link — and (2) <input type="file"> uploads —
+// WebView does nothing at all for these unless the app supplies a
+// WebChromeClient.onShowFileChooser implementation, which is what launches
+// the actual system file picker below.
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private lateinit var filePickerLauncher: ActivityResultLauncher<Intent>
 
     companion object {
         const val BASE_URL = "https://moonlight-cloud-current-production.up.railway.app"
@@ -30,6 +41,21 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            val results: Array<Uri>? = when {
+                result.resultCode != Activity.RESULT_OK || data == null -> null
+                data.clipData != null -> {
+                    val count = data.clipData!!.itemCount
+                    Array(count) { i -> data.clipData!!.getItemAt(i).uri }
+                }
+                data.data != null -> arrayOf(data.data!!)
+                else -> null
+            }
+            fileChooserCallback?.onReceiveValue(results)
+            fileChooserCallback = null
+        }
 
         webView = findViewById(R.id.webView)
         setupWebView()
@@ -64,6 +90,29 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
                 return false // everything else stays inside the app
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = filePathCallback
+                val intent = fileChooserParams.createIntent().apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+                try {
+                    filePickerLauncher.launch(intent)
+                } catch (e: Exception) {
+                    fileChooserCallback = null
+                    Toast.makeText(this@MainActivity, "Couldn't open file picker", Toast.LENGTH_SHORT).show()
+                    return false
+                }
+                return true
             }
         }
 

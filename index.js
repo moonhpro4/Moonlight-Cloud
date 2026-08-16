@@ -575,18 +575,31 @@ app.post('/api/ai/chat', async (req, res) => {
       headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${AI_TOKEN}` },
       body: JSON.stringify({ messages: [...history, { role:'user', content: message }] })
     });
-    const data = await r.json().catch(() => ({}));
-    // Best-effort extraction — adjust here once the exact response shape of
-    // the connected AI backend is confirmed.
-    const reply = data.reply || data.message || data.content
-      || data.choices?.[0]?.message?.content
-      || (typeof data === 'string' ? data : null);
-    if (!reply) return res.status(502).json({ ok:false, error:'Unexpected response from AI service.', raw:data });
+    const rawText = await r.text();
+    let data = {};
+    try { data = JSON.parse(rawText); } catch { data = rawText; }
+
+    // Best-effort extraction across common response shapes. If none match,
+    // surface the actual raw response in the error instead of guessing
+    // silently — that's what lets us pin down the real shape and fix this
+    // in one line once we see it.
+    const reply = (typeof data === 'object' && data !== null) ? (
+      data.reply || data.message?.content || data.message || data.content || data.text || data.output
+      || data.choices?.[0]?.message?.content || data.choices?.[0]?.text
+      || data.candidates?.[0]?.content?.parts?.[0]?.text // Gemini-native shape
+      || data.response
+      || null
+    ) : (typeof data === 'string' && data.trim() ? data : null);
+
+    if (!reply) {
+      console.error('Unrecognized AI response shape:', JSON.stringify(data).slice(0, 500));
+      return res.status(502).json({ ok:false, error:'Unexpected response from AI service.', debug: typeof data === 'string' ? data.slice(0,300) : data });
+    }
 
     if (session) store.addMessage(convoId, 'assistant', reply);
     res.json({ ok:true, reply, conversationId: convoId || null });
-  } catch {
-    res.status(502).json({ ok:false, error:'Could not reach the AI service.' });
+  } catch (e) {
+    res.status(502).json({ ok:false, error:'Could not reach the AI service.', debug: e.message });
   }
 });
 

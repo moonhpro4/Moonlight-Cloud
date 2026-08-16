@@ -1179,7 +1179,7 @@ async function sendAiMessage(){
       body: JSON.stringify({ message, conversationId: aiConversationId }) });
     const data = await res.json();
     thinking.remove();
-    if(!data.ok){ appendAiMessage('assistant', data.error || 'Something went wrong.'); return; }
+    if(!data.ok){ appendAiMessage('assistant', (data.error||'Something went wrong.')+(data.debug?('\n\n[debug] '+JSON.stringify(data.debug).slice(0,400)):'')); return; }
     if(data.conversationId) aiConversationId = data.conversationId;
     appendAiMessage('assistant', data.reply);
   } catch {
