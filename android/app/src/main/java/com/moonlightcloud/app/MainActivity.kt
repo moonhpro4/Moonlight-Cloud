@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var filePickerLauncher: ActivityResultLauncher<Intent>
 
     companion object {
-        const val BASE_URL = "https://moonlight-cloud-current-production.up.railway.app"
+        const val BASE_URL = "https://moonlight-cloud-fix-production.up.railway.app"
         const val APP_URL = "$BASE_URL/mobile"
         const val LOGIN_PATH = "/mobilelogin"
     }
