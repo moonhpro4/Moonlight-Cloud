@@ -23,25 +23,29 @@
 <body>
   <div class="card">
     <div class="logo">🌙</div>
-    <h1>Connect to Moonlight Cloud</h1>
-    <p>An AI assistant wants to search your files by name so it can hand you the right link.</p>
-    <div class="scope-box">This lets it <b>search your file names</b> and read their share links. It cannot delete, modify, or upload anything.</div>
+    <h1 id="pageTitle">Connect to Moonlight Cloud</h1>
+    <p id="pageDesc">An AI assistant wants to search your files by name so it can hand you the right link.</p>
+    <div class="scope-box" id="scopeBox">This lets it <b>search your file names</b> and read their share links. It cannot delete, modify, or upload anything.</div>
     <div id="gsiBtn"></div>
     <div class="status" id="status"></div>
   </div>
 
 <script>
 const params = new URLSearchParams(location.search);
-const flow = params.get('flow');
+const flow = params.get('flow'); // present only when Claude/ChatGPT initiated this
 const GOOGLE_CLIENT_ID = '216983659910-038e24nvehhll2ef06dqbiijg38v9abm.apps.googleusercontent.com';
+
+if (!flow) {
+  document.getElementById('pageTitle').textContent = 'Sign in to get your MCP URL';
+  document.getElementById('pageDesc').textContent = 'Sign in with Google to generate your personal Moonlight AI MCP link.';
+  document.getElementById('scopeBox').style.display = 'none';
+}
 
 function setStatus(msg, isErr){
   const el = document.getElementById('status');
   el.textContent = msg;
   el.className = 'status' + (isErr ? ' err' : '');
 }
-
-if (!flow) setStatus('This link is missing information — please restart the connection from Claude/ChatGPT.', true);
 
 function initGSI(){
   if (typeof google === 'undefined') { setTimeout(initGSI, 200); return; }
@@ -52,21 +56,36 @@ function initGSI(){
 async function handleCredential(response){
   setStatus('Connecting...');
   try {
-    const res = await fetch('/mcp/authorize/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ flow, credential: response.credential })
-    });
-    const data = await res.json();
-    if (!data.ok) { setStatus(data.error || 'Connection failed.', true); return; }
-    setStatus('Connected as ' + data.name + ' — returning...');
-    location.href = data.redirect;
+    if (flow) {
+      // Claude/ChatGPT-initiated OAuth handshake
+      const res = await fetch('/mcp/authorize/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow, credential: response.credential })
+      });
+      const data = await res.json();
+      if (!data.ok) { setStatus(data.error || 'Connection failed.', true); return; }
+      setStatus('Connected as ' + data.name + ' — returning...');
+      location.href = data.redirect;
+    } else {
+      // Direct visit from the /mcp landing page — sign in, then go see the
+      // personal permanent MCP URL.
+      const res = await fetch('/mcp/direct-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: response.credential })
+      });
+      const data = await res.json();
+      if (!data.ok) { setStatus(data.error || 'Sign-in failed.', true); return; }
+      setStatus('Signed in — generating your URL...');
+      location.href = '/mcpcustom?token=' + encodeURIComponent(data.token);
+    }
   } catch (e) {
     setStatus('Something went wrong. Please try again.', true);
   }
 }
 
-if (flow) initGSI();
+initGSI();
 </script>
 </body>
 </html>

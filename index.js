@@ -198,6 +198,22 @@ app.post('/mcp/authorize/complete', async (req, res) => {
   }
 });
 
+// Direct sign-in from the /mcp landing page's "Get MCP" button (no Claude
+// involved yet) — a plain Google login that then hands the user off to
+// /mcpcustom to see/copy their personal MCP URL.
+app.post('/mcp/direct-login', async (req, res) => {
+  const { credential } = req.body;
+  try {
+    const ticket  = await gClient.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
+    const payload = ticket.getPayload();
+    const token = uuidv4();
+    store.setSessionRow(token, { userId: payload.sub, email: payload.email, name: payload.name, picture: payload.picture });
+    res.json({ ok:true, token });
+  } catch {
+    res.status(401).json({ ok:false, error:'Google sign-in failed.' });
+  }
+});
+
 app.post('/mcp/token', (req, res) => {
   const { code, code_verifier } = req.body;
   const entry = mcpAuthCodes[code];
@@ -218,17 +234,31 @@ function getMcpUser(req) {
   return token ? mcpTokens[token] : null;
 }
 
-// Per the MCP Streamable HTTP spec, GET on this endpoint is for opening an
-// optional server-initiated SSE stream. This server doesn't push
-// unsolicited messages, so it correctly responds 405 (not a raw 404) —
-// clients should use POST for all requests.
-app.get('/mcp', (req, res) => {
-  res.status(405).set('Allow', 'POST').json({ error: 'Method Not Allowed — this MCP server only accepts POST JSON-RPC requests.' });
+// GET /mcp is what a human sees browsing here directly — a landing page
+// explaining the connector, with a "Get MCP" button.
+app.get('/mcp', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mcp-landing.html')));
+app.get('/mcpcustom', (req, res) => res.sendFile(path.join(__dirname, 'public', 'mcpcustom.html')));
+
+// Personal, permanent MCP URL — created on first request, regeneratable.
+app.get('/api/mcp/my-url', (req, res) => {
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ ok:false, error:'Sign in required.' });
+  const token = store.getOrCreateMcpToken(session.userId);
+  res.json({ ok:true, url: `${getBase(req)}/mcp/u/${token}`, name: session.name, email: session.email });
+});
+app.post('/api/mcp/regenerate', (req, res) => {
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ ok:false, error:'Sign in required.' });
+  const token = store.regenerateMcpToken(session.userId);
+  res.json({ ok:true, url: `${getBase(req)}/mcp/u/${token}` });
 });
 
-app.post('/mcp', express.json(), async (req, res) => {
-  const user = getMcpUser(req);
-  const { id, method, params } = req.body || {};
+// Shared JSON-RPC handler for both connection methods: the OAuth-driven flow
+// (Claude connects to plain /mcp, does its own Google-login redirect) and the
+// permanent personal URL (/mcp/u/<token> — auth is the URL itself, no login
+// step inside the AI client at all).
+async function handleMcpRequest(user, body, res) {
+  const { id, method, params } = body || {};
 
   if (!user && method !== 'initialize') {
     return res.status(401).json({ jsonrpc:'2.0', id, error:{ code:-32001, message:'Unauthorized' } });
@@ -262,6 +292,17 @@ app.post('/mcp', express.json(), async (req, res) => {
     return res.json({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text }] } });
   }
   res.status(400).json({ jsonrpc:'2.0', id, error:{ code:-32601, message:'Method not found' } });
+}
+
+app.post('/mcp', express.json(), (req, res) => handleMcpRequest(getMcpUser(req), req.body, res));
+
+// Personal permanent-URL endpoint — the token in the path IS the credential.
+app.post('/mcp/u/:token', express.json(), (req, res) => {
+  const userId = store.getUserIdByMcpToken(req.params.token);
+  handleMcpRequest(userId ? { userId } : null, req.body, res);
+});
+app.get('/mcp/u/:token', (req, res) => {
+  res.status(405).set('Allow', 'POST').json({ error: 'Method Not Allowed — this MCP server only accepts POST JSON-RPC requests.' });
 });
 
 // ── Keep forever setting ──────────────────────────────────────────────────────
@@ -340,78 +381,6 @@ app.post('/api/upload', guestSizeGate, (req, res) => {
       if (err) return res.status(err.status).json({ ok:false, error: err.error });
       res.json({ ok:true, ...result });
     });
-  });
-});
-
-// ── Download by URL ───────────────────────────────────────────────────────────
-// Fetches a direct file link server-side and drops it straight into the
-// user's cloud storage — nothing touches the requester's device.
-app.post('/api/upload-from-url', async (req, res) => {
-  const { url } = req.body || {};
-  if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ ok:false, error:'Please provide a valid http(s) URL.' });
-
-  const session = getSession(req);
-  const cap = session ? getQuota(session, req.ip).max - getQuota(session, req.ip).used : GUEST_FILE_CAP;
-
-  let upstream;
-  try {
-    upstream = await fetch(url, { redirect: 'follow' });
-  } catch {
-    return res.status(400).json({ ok:false, error:'Could not reach that URL.' });
-  }
-  if (!upstream.ok || !upstream.body) {
-    return res.status(400).json({ ok:false, error:`That URL returned an error (${upstream.status}).` });
-  }
-
-  const declaredLen = parseInt(upstream.headers.get('content-length') || '0', 10);
-  if (declaredLen && declaredLen > cap) {
-    return res.status(413).json({ ok:false, error: session ? 'That file is larger than your remaining storage.' : 'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
-  }
-
-  let originalname = 'download';
-  try {
-    const u = new URL(url);
-    originalname = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || 'download');
-  } catch {}
-  const disposition = upstream.headers.get('content-disposition');
-  const m = disposition && disposition.match(/filename="?([^";]+)"?/i);
-  if (m) originalname = m[1];
-
-  const tmpId = uuidv4();
-  const tmpPath = path.join('uploads', 'tmp-' + tmpId);
-  const writeStream = fs.createWriteStream(tmpPath);
-  let bytesWritten = 0;
-  let aborted = false;
-
-  const reader = upstream.body.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytesWritten += value.length;
-      if (bytesWritten > cap) {
-        aborted = true;
-        try { reader.cancel(); } catch {}
-        break;
-      }
-      writeStream.write(Buffer.from(value));
-    }
-  } catch {
-    aborted = true;
-  }
-  writeStream.end();
-
-  if (aborted) {
-    try { fs.unlinkSync(tmpPath); } catch {}
-    return res.status(413).json({ ok:false, error: session ? 'That file is larger than your remaining storage.' : 'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
-  }
-
-  finalizeUpload({
-    req, filePath: tmpPath, originalname, size: bytesWritten,
-    mimetype: upstream.headers.get('content-type') || 'application/octet-stream'
-  }, (err, result) => {
-    if (err) return res.status(err.status).json({ ok:false, error: err.error });
-    res.json({ ok:true, ...result });
   });
 });
 
@@ -515,27 +484,75 @@ app.get('/mobilelogin', (req, res) => res.sendFile(path.join(__dirname, 'public'
 // ═══════════════════════════════════════════════════════════════════════════
 // Moonlight AI — chat assistant. The API token lives only in this server's
 // environment (MOONLIGHT_AI_TOKEN) and is never sent to the browser; the
-// client only ever talks to our own /api/ai/* routes.
+// client only ever talks to our own /api/ai/* routes. Uses the official
+// OpenAI SDK against the OpenAI-compatible endpoint — no guessed request or
+// response shape.
 // ═══════════════════════════════════════════════════════════════════════════
+const OpenAI = require('openai');
 const AI_API_URL = process.env.MOONLIGHT_AI_API_URL;
 const AI_TOKEN    = process.env.MOONLIGHT_AI_TOKEN;
+const AI_MODEL    = process.env.MOONLIGHT_AI_MODEL || 'google/gemini-2.5-pro';
 
-// Real warmup call — the underlying model endpoint can have a cold start, so
-// this is an actual first round-trip to the API (not a cosmetic delay) that
-// the client waits on before enabling the chat input.
-app.get('/api/ai/warmup', async (req, res) => {
-  if (!AI_API_URL || !AI_TOKEN) return res.status(503).json({ ok:false, error:'AI is not configured on this server yet.' });
+const aiClient = (AI_API_URL && AI_TOKEN) ? new OpenAI({ baseURL: AI_API_URL, apiKey: AI_TOKEN }) : null;
+
+const MOONLIGHT_SYSTEM_PROMPT = `You are Moonlight AI, the assistant embedded in Moonlight Cloud, a cloud file hosting website. Help users understand and use the site accurately based on how it actually works, described below. Do not claim features that aren't listed here. You can also help with general questions — math, tech, coding, and everyday topics — like any capable assistant.
+
+WHAT MOONLIGHT CLOUD IS
+A dark-themed (purple/moon branding) cloud file storage and sharing site. Users can upload any file type, get a shareable download link, and optionally sign in with Google for expanded storage.
+
+UPLOADING
+- Anyone can upload without an account ("guest" mode). Signed-in users authenticate via "Sign in with Google."
+- Any file type is accepted, no restrictions.
+- There is no real malware/virus scanning. The upload flow shows a scan-style animation for UI purposes only, but it never blocks any file. Every download page honestly discloses: "We do not scan files for viruses or malware. Download at your own risk." Never claim files have been verified safe.
+
+GUEST (NOT SIGNED IN) RULES
+- Max file size: 5GB per file. No cap on total files or storage used.
+- Every guest file automatically and permanently expires 7 days after upload — irreversible, even if the uploader signs in later.
+- Guest files can never be marked "keep forever."
+
+SIGNED-IN (GOOGLE ACCOUNT) RULES
+- 9TB total free storage per account. No per-file size limit.
+- Files default to a 30-day expiry unless "keep forever" is turned on (globally in Settings, or per file).
+- If an account runs out of storage: "You're out of storage. Delete some files, or create a new account for another free 9TB." No paid tier exists.
+
+DOWNLOADING & SHARING
+- Every file gets a share link (/d/<shareId>) anyone can open to view info and download.
+- The download page shows ready-to-copy terminal commands (curl/wget/PowerShell).
+- A "direct link" variant (share link + /direct) skips the page entirely and starts the download instantly with zero UI.
+- Video/audio files show an inline preview player; other file types never do.
+
+MCP CONNECTOR (Claude / ChatGPT)
+- Visit /mcp, click "Get MCP," sign in with Google, and get a personal, permanent MCP URL to paste into Claude or ChatGPT's connector settings — plug and play, no separate login step inside the AI client.
+- Once connected, the AI can search that user's own files by name via a "search_files" tool. Read/search only — it cannot delete, modify, or upload.
+
+MOBILE APP
+- An Android app (APK, sideload-only, not on the Play Store) wraps the website in a native app shell. Same account, same files, same limits as the website.
+
+WHAT DOES NOT EXIST (never claim these are available)
+- No payment plans or paid storage tiers.
+- No virtual machine / cloud compute feature.
+- No general "browse any website" feature, no plugin execution system.
+- No real virus/malware scanning of any kind.`;
+
+// Cached, periodic health check — the "Moonlight AI" button is hidden
+// site-wide (all accounts, including brand new ones) whenever this is false,
+// rather than showing a feature that's currently broken.
+let aiHealthy = false;
+let lastHealthCheck = 0;
+async function checkAiHealth() {
+  if (!aiClient) { aiHealthy = false; return; }
   try {
-    const r = await fetch(AI_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${AI_TOKEN}` },
-      body: JSON.stringify({ messages: [{ role:'system', content:'ping' }] })
-    });
-    res.json({ ok: true, warm: r.status < 500 });
+    await aiClient.chat.completions.create({ model: AI_MODEL, messages: [{ role:'user', content:'ping' }], max_tokens: 5 });
+    aiHealthy = true;
   } catch {
-    res.status(503).json({ ok:false, error:'Could not reach the AI service.' });
+    aiHealthy = false;
   }
-});
+  lastHealthCheck = Date.now();
+}
+checkAiHealth();
+setInterval(checkAiHealth, 5 * 60 * 1000); // re-check every 5 minutes
+
+app.get('/api/ai/status', (req, res) => res.json({ ok:true, available: aiHealthy }));
 
 app.get('/api/ai/conversations', (req, res) => {
   const session = getSession(req);
@@ -559,7 +576,9 @@ app.delete('/api/ai/conversations/:id', (req, res) => {
 });
 
 app.post('/api/ai/chat', async (req, res) => {
-  if (!AI_API_URL || !AI_TOKEN) return res.status(503).json({ ok:false, error:'AI is not configured on this server yet.' });
+  if (!aiClient) return res.status(503).json({ ok:false, error:'AI is not configured on this server yet.' });
+  if (!aiHealthy) return res.status(503).json({ ok:false, error:'Moonlight AI is temporarily unavailable.' });
+
   const session = getSession(req);
   const { message, conversationId } = req.body || {};
   if (!message || !message.trim()) return res.status(400).json({ ok:false, error:'Empty message.' });
@@ -578,35 +597,21 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 
   try {
-    const r = await fetch(AI_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${AI_TOKEN}` },
-      body: JSON.stringify({ messages: [...history, { role:'user', content: message }] })
+    const completion = await aiClient.chat.completions.create({
+      model: AI_MODEL,
+      messages: [
+        { role:'system', content: MOONLIGHT_SYSTEM_PROMPT },
+        ...history,
+        { role:'user', content: message }
+      ]
     });
-    const rawText = await r.text();
-    let data = {};
-    try { data = JSON.parse(rawText); } catch { data = rawText; }
-
-    // Best-effort extraction across common response shapes. If none match,
-    // surface the actual raw response in the error instead of guessing
-    // silently — that's what lets us pin down the real shape and fix this
-    // in one line once we see it.
-    const reply = (typeof data === 'object' && data !== null) ? (
-      data.reply || data.message?.content || data.message || data.content || data.text || data.output
-      || data.choices?.[0]?.message?.content || data.choices?.[0]?.text
-      || data.candidates?.[0]?.content?.parts?.[0]?.text // Gemini-native shape
-      || data.response
-      || null
-    ) : (typeof data === 'string' && data.trim() ? data : null);
-
-    if (!reply) {
-      console.error('Unrecognized AI response shape:', JSON.stringify(data).slice(0, 500));
-      return res.status(502).json({ ok:false, error:'Unexpected response from AI service.', debug: typeof data === 'string' ? data.slice(0,300) : data });
-    }
+    const reply = completion.choices?.[0]?.message?.content;
+    if (!reply) return res.status(502).json({ ok:false, error:'Unexpected response from AI service.' });
 
     if (session) store.addMessage(convoId, 'assistant', reply);
     res.json({ ok:true, reply, conversationId: convoId || null });
   } catch (e) {
+    aiHealthy = false; // a live failure also flips the site-wide flag immediately
     res.status(502).json({ ok:false, error:'Could not reach the AI service.', debug: e.message });
   }
 });

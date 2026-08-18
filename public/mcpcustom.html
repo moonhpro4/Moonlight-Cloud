@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Your MCP URL — Moonlight Cloud</title>
+<link rel="icon" type="image/jpeg" href="/favicon.jpg"/>
+<style>
+  :root{--bg:#0a0c1f;--surface:#12142c;--surface2:#181a38;--border:#232544;--text:#f2f3fb;--muted:#9a9dc2;--accent:#8b7cf6;--success:#4ade80}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{max-width:520px;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:32px 28px;text-align:center}
+  .logo{font-size:2rem;margin-bottom:8px}
+  h1{font-size:1.25rem;margin:0 0 6px}
+  .who{color:var(--muted);font-size:0.85rem;margin-bottom:24px}
+  .url-box{display:flex;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px;align-items:center}
+  .url-box input{flex:1;background:transparent;border:none;color:var(--text);font-size:0.82rem;font-family:monospace;outline:none}
+  .copy-btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:600;font-size:0.8rem;cursor:pointer;flex-shrink:0}
+  .copy-btn:hover{opacity:0.9}
+  .note{font-size:0.78rem;color:var(--muted);line-height:1.5;margin-bottom:20px}
+  .regen{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:9px 16px;font-size:0.8rem;cursor:pointer}
+  .regen:hover{border-color:var(--accent);color:var(--text)}
+  .warn{color:#ffb547}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🌙</div>
+    <h1>Your Moonlight AI MCP URL</h1>
+    <div class="who" id="who">Loading...</div>
+    <div class="url-box">
+      <input type="text" id="urlInput" readonly value="Loading..."/>
+      <button class="copy-btn" onclick="copyUrl()">Copy</button>
+    </div>
+    <div class="note">Paste this into Claude or ChatGPT's connector settings as your MCP server URL. It's <b>personal and permanent</b> — anyone with this exact link can search your files, so don't share it. If it ever leaks, hit regenerate below to invalidate it instantly.</div>
+    <button class="regen" onclick="regenerate()">↻ Regenerate URL</button>
+  </div>
+
+<script>
+const params = new URLSearchParams(location.search);
+let sessionToken = params.get('token') || localStorage.getItem('ml_token');
+if (params.get('token')) { localStorage.setItem('ml_mcp_token_seen', '1'); history.replaceState({}, '', '/mcpcustom'); }
+
+async function loadUrl(){
+  if (!sessionToken) { document.getElementById('who').textContent = 'Please sign in from /mcp first.'; return; }
+  try {
+    const res = await fetch('/api/mcp/my-url', { headers: { 'x-session-token': sessionToken } });
+    const data = await res.json();
+    if (!data.ok) { document.getElementById('who').textContent = data.error || 'Failed to load.'; return; }
+    document.getElementById('who').textContent = 'Signed in as ' + (data.name || data.email);
+    document.getElementById('urlInput').value = data.url;
+  } catch { document.getElementById('who').textContent = 'Something went wrong.'; }
+}
+
+function copyUrl(){
+  const input = document.getElementById('urlInput');
+  input.select();
+  navigator.clipboard.writeText(input.value);
+  const btn = document.querySelector('.copy-btn');
+  const old = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => btn.textContent = old, 1500);
+}
+
+async function regenerate(){
+  if (!confirm('This invalidates your current MCP URL — any AI assistant using the old one will stop working until you paste the new one. Continue?')) return;
+  try {
+    const res = await fetch('/api/mcp/regenerate', { method:'POST', headers: { 'x-session-token': sessionToken } });
+    const data = await res.json();
+    if (data.ok) document.getElementById('urlInput').value = data.url;
+  } catch {}
+}
+
+loadUrl();
+</script>
+</body>
+</html>

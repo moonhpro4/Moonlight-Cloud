@@ -381,8 +381,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
     <div class="sidebar-scrim" id="sidebarScrim" onclick="toggleSidebar(false)"></div>
     <div class="drive-sidebar" id="driveSidebar">
       <button class="sidebar-new-btn" onclick="openUploadModal();if(window.innerWidth<=768)toggleSidebar(false)"><span>＋</span> New Upload</button>
-      <button class="sidebar-new-btn" onclick="openUrlUploadModal();if(window.innerWidth<=768)toggleSidebar(false)" style="margin-bottom:20px"><span>🌐</span> Download by URL</button>
-      <button class="sidebar-new-btn" onclick="openAiWindow();if(window.innerWidth<=768)toggleSidebar(false)" style="margin-bottom:20px">
+      <button class="sidebar-new-btn" id="moonlightAiBtn" onclick="openAiWindow();if(window.innerWidth<=768)toggleSidebar(false)" style="margin-bottom:20px;display:none">
         <span class="ai-logo-mark" style="width:18px;height:18px;display:inline-flex"><svg viewBox="0 0 32 32"><use href="#aiLogo"/></svg></span> Moonlight AI
       </button>
       <a class="sidebar-item active" id="sb-myfiles" onclick="setSection('myfiles')"><span class="si-icon">🗂</span> My Files</a>
@@ -474,20 +473,6 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-h
     <div class="modal-title">Security Alert</div>
     <div class="modal-body" id="securityModalBody">Malicious file detected. This file has been permanently blocked.</div>
     <button class="modal-btn modal-btn-secondary" onclick="closeModal('securityModal');resetAll()">Dismiss</button>
-  </div>
-</div>
-<div class="modal-overlay" id="urlUploadModal">
-  <div class="modal">
-    <span class="modal-icon">🌐</span>
-    <div class="modal-title">Download by URL</div>
-    <div class="modal-body">Paste a direct file link. We'll fetch it on our server and drop it straight into your cloud storage — it never touches your device.</div>
-    <input type="text" id="urlUploadInput" placeholder="https://example.com/file.zip"
-      style="width:100%;padding:12px 14px;border-radius:10px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-size:0.9rem;margin:14px 0;box-sizing:border-box"/>
-    <div id="urlUploadStatus" style="font-size:0.8rem;color:var(--muted2);min-height:18px;margin-bottom:6px"></div>
-    <div style="display:flex;gap:8px">
-      <button class="modal-btn modal-btn-secondary" onclick="closeModal('urlUploadModal')" style="flex:1">Cancel</button>
-      <button class="btn-primary" id="urlUploadBtn" onclick="startUrlUpload()" style="flex:1">Download</button>
-    </div>
   </div>
 </div>
 
@@ -1043,38 +1028,6 @@ function resetFileInput(){ document.getElementById('fileInput').value=''; }
 function openModal(id){ document.getElementById(id).classList.add('active'); }
 function closeModal(id){ document.getElementById(id).classList.remove('active'); }
 
-function openUrlUploadModal(){
-  document.getElementById('urlUploadInput').value = '';
-  document.getElementById('urlUploadStatus').textContent = '';
-  openModal('urlUploadModal');
-}
-
-async function startUrlUpload(){
-  const url = document.getElementById('urlUploadInput').value.trim();
-  const status = document.getElementById('urlUploadStatus');
-  const btn = document.getElementById('urlUploadBtn');
-  if(!url){ status.textContent='Enter a URL first.'; status.style.color='#ff6b6b'; return; }
-  btn.disabled = true; btn.textContent='Downloading...';
-  status.style.color='var(--muted2)';
-  status.textContent='Fetching from server — this can take a moment for large files...';
-  try {
-    const headers = { 'Content-Type':'application/json' };
-    if(sessionToken) headers['x-session-token'] = sessionToken;
-    const res = await fetch('/api/upload-from-url', { method:'POST', headers, body: JSON.stringify({ url }) });
-    const data = await res.json();
-    if(!data.ok){ status.textContent = data.error || 'Failed to fetch that URL.'; status.style.color='#ff6b6b'; btn.disabled=false; btn.textContent='Download'; return; }
-    status.textContent = 'Saved "'+data.name+'" to your cloud storage ✓';
-    status.style.color = 'var(--success)';
-    showToast('Added to your cloud','success');
-    if(typeof loadDriveFiles==='function') loadDriveFiles();
-    if(typeof refreshDriveQuota==='function') refreshDriveQuota();
-    setTimeout(()=>closeModal('urlUploadModal'), 1200);
-  } catch(e){
-    status.textContent = 'Something went wrong. Please try again.'; status.style.color='#ff6b6b';
-  } finally {
-    btn.disabled = false; btn.textContent='Download';
-  }
-}
 function showSecurityModal(msg){ document.getElementById('securityModalBody').textContent=msg; document.getElementById('scanCard').classList.remove('active'); document.getElementById('guestUploadWrap').style.display=''; openModal('securityModal'); resetFileInput(); }
 function fileIcon(n){ const e=(n.split('.').pop()||'').toLowerCase(); return {mp4:'🎬',mkv:'🎬',webm:'🎬',avi:'🎬',mov:'🎬',mp3:'🎵',wav:'🎵',flac:'🎵',jpg:'🖼',jpeg:'🖼',png:'🖼',gif:'🖼',webp:'🖼',zip:'📦',rar:'📦','7z':'📦',tar:'📦',gz:'📦',pdf:'📄',docx:'📝',doc:'📝',txt:'📝',exe:'⚙',apk:'📱',iso:'💿',dmg:'💿'}[e]||'📁'; }
 function fmtBytes(b){ if(!b) return '0 B'; if(b>=1e9) return (b/1e9).toFixed(2)+' GB'; if(b>=1e6) return (b/1e6).toFixed(1)+' MB'; if(b>=1e3) return (b/1e3).toFixed(0)+' KB'; return b+' B'; }
@@ -1087,24 +1040,32 @@ init();
 // ── Moonlight AI ──────────────────────────────────────────────────────────
 let aiWarmed = false;
 let aiConversationId = null;
+let aiAvailable = false;
+
+// Checked once on page load for every account, including brand new ones —
+// the button simply doesn't render at all if the AI backend is down, rather
+// than showing a feature that's currently broken.
+(async function checkAiAvailability(){
+  try {
+    const res = await fetch('/api/ai/status');
+    const data = await res.json();
+    aiAvailable = !!data.available;
+  } catch { aiAvailable = false; }
+  const btn = document.getElementById('moonlightAiBtn');
+  if (btn) btn.style.display = aiAvailable ? 'flex' : 'none';
+})();
 
 async function openAiWindow(){
+  if (!aiAvailable) { showToast('Moonlight AI is temporarily unavailable','error'); return; }
   document.getElementById('aiWindow').classList.add('active');
   if(aiWarmed) return;
   const loading = document.getElementById('aiLoading');
   const loadingText = document.getElementById('aiLoadingText');
   loading.style.display='flex';
   loadingText.textContent='Loading AI…';
-  await new Promise(r=>setTimeout(r,300));
+  await new Promise(r=>setTimeout(r,250));
   loadingText.textContent='Preparing AI…';
-  await new Promise(r=>setTimeout(r,300));
-  loadingText.textContent='Loading API…';
-  // Real warmup call — the model backend can have a cold start, so we
-  // actually wait on it here rather than faking the delay.
-  try {
-    const headers = sessionToken ? {'x-session-token':sessionToken} : {};
-    await fetch('/api/ai/warmup', { headers });
-  } catch {}
+  await new Promise(r=>setTimeout(r,250));
   aiWarmed = true;
   loading.style.display='none';
 }

@@ -133,6 +133,38 @@ function deleteConversation(id) {
   db.prepare('DELETE FROM ai_conversations WHERE id = ?').run(id);
 }
 
+// ── Permanent per-account MCP URL tokens ────────────────────────────────────
+// A long-lived secret embedded directly in the URL path a user pastes into
+// Claude/ChatGPT (https://.../mcp/u/<token>) — no separate login step inside
+// the AI client. Regeneratable if it ever leaks.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_permanent_tokens (
+    userId TEXT PRIMARY KEY,
+    token TEXT UNIQUE NOT NULL,
+    createdAt TEXT
+  );
+`);
+
+function getOrCreateMcpToken(userId) {
+  const row = db.prepare('SELECT token FROM mcp_permanent_tokens WHERE userId = ?').get(userId);
+  if (row) return row.token;
+  const token = crypto.randomBytes(24).toString('hex');
+  db.prepare('INSERT INTO mcp_permanent_tokens (userId, token, createdAt) VALUES (?, ?, ?)')
+    .run(userId, token, new Date().toISOString());
+  return token;
+}
+function regenerateMcpToken(userId) {
+  const token = crypto.randomBytes(24).toString('hex');
+  db.prepare(`INSERT INTO mcp_permanent_tokens (userId, token, createdAt) VALUES (?, ?, ?)
+              ON CONFLICT(userId) DO UPDATE SET token = ?, createdAt = ?`)
+    .run(userId, token, new Date().toISOString(), token, new Date().toISOString());
+  return token;
+}
+function getUserIdByMcpToken(token) {
+  const row = db.prepare('SELECT userId FROM mcp_permanent_tokens WHERE token = ?').get(token);
+  return row ? row.userId : null;
+}
+
 module.exports = {
   db,
   getUserKeepForever, setUserKeepForever,
@@ -140,5 +172,6 @@ module.exports = {
   getFile, getFileByShare, allFiles, filesByOwner,
   insertFile, updateFile, deleteFileRow, setAllKeepForeverForOwner,
   createConversation, touchConversation, getConversation, listConversations,
-  addMessage, getMessages, deleteConversation
+  addMessage, getMessages, deleteConversation,
+  getOrCreateMcpToken, regenerateMcpToken, getUserIdByMcpToken
 };
