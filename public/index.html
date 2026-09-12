@@ -859,28 +859,95 @@ async function handleModalFile(file){
   startModalUpload(file,hash);
 }
 
+// ── CHUNKED, RESUMABLE UPLOAD ─────────────────────────────────────────────────
+// Large uploads (and mobile app uploads that can be interrupted by the OS
+// closing the app) are broken into 8MB pieces instead of one giant request.
+// If the connection drops or the app closes mid-upload, reopening and
+// re-selecting the same file resumes from the last completed piece instead
+// of starting over — the browser/app remembers which upload this is via a
+// fingerprint of the file's name+size+lastModified, stored in localStorage.
+const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+
+function fileFingerprint(file){
+  return 'ml_upl:'+file.name+':'+file.size+':'+(file.lastModified||0);
+}
+
+async function chunkedUpload(file, hash, { onProgress, onDone, onError }){
+  const fpKey = fileFingerprint(file);
+  let uploadId = localStorage.getItem(fpKey);
+  let receivedSet = new Set();
+  const authHeaders = sessionToken ? {'x-session-token':sessionToken} : {};
+
+  try {
+    if(uploadId){
+      // Resume attempt — ask the server what it already has for this upload.
+      const statusRes = await fetch('/api/upload/status/'+uploadId, { headers: authHeaders });
+      if(statusRes.ok){
+        const statusData = await statusRes.json();
+        if(statusData.ok) receivedSet = new Set(statusData.receivedChunks);
+      } else {
+        uploadId = null; // server doesn't know this upload (expired/restarted) — start fresh
+      }
+    }
+    if(!uploadId){
+      const initRes = await fetch('/api/upload/init', {
+        method:'POST',
+        headers: Object.assign({'Content-Type':'application/json'}, authHeaders),
+        body: JSON.stringify({ name:file.name, size:file.size, mimetype:file.type||'application/octet-stream', hash })
+      });
+      const initData = await initRes.json();
+      if(!initData.ok){ onError(initData.error||'Could not start upload'); return; }
+      uploadId = initData.uploadId;
+      localStorage.setItem(fpKey, uploadId);
+    }
+
+    const totalChunks = Math.ceil(file.size / UPLOAD_CHUNK_SIZE);
+    let uploadedBytes = receivedSet.size * UPLOAD_CHUNK_SIZE;
+    const t0 = Date.now();
+    onProgress(Math.min(100, Math.round(uploadedBytes/file.size*100)), 0);
+
+    for(let i=0; i<totalChunks; i++){
+      if(receivedSet.has(i)) continue;
+      const start = i * UPLOAD_CHUNK_SIZE;
+      const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size);
+      const chunkBlob = file.slice(start, end);
+      const res = await fetch('/api/upload/chunk/'+uploadId+'?index='+i, {
+        method:'POST',
+        headers: Object.assign({'Content-Type':'application/octet-stream'}, authHeaders),
+        body: chunkBlob
+      });
+      if(!res.ok){ onError('Upload interrupted — try again and it will resume from here.'); return; }
+      uploadedBytes += (end - start);
+      onProgress(Math.min(100, Math.round(uploadedBytes/file.size*100)), uploadedBytes/((Date.now()-t0)/1000));
+    }
+
+    const completeRes = await fetch('/api/upload/complete/'+uploadId, { method:'POST', headers: authHeaders });
+    const completeData = await completeRes.json();
+    localStorage.removeItem(fpKey);
+    if(!completeData.ok){ onError(completeData.error||'Upload failed'); return; }
+    onDone(completeData);
+  } catch(e){
+    onError('Network error — try again and it will resume from where it left off.');
+  }
+}
+
 function startModalUpload(file,hash){
-  const formData=new FormData();
-  formData.append('file',file);formData.append('hash',hash);
-  const xhr=new XMLHttpRequest(); const t0=Date.now();
-  xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=Math.round(e.loaded/e.total*100); document.getElementById('mProgFill').style.width=pct+'%'; document.getElementById('mProgPct').textContent=pct+'%'; document.getElementById('mProgSpeed').textContent=fmtBytes(e.loaded/((Date.now()-t0)/1000))+'/s'; } });
-  xhr.addEventListener('load',()=>{
-    try {
-      const data=JSON.parse(xhr.responseText);
-      if(data.ok){
-        document.getElementById('modalProgCard').style.display='none';
-        document.getElementById('modalResultCard').style.display='block';
-        document.getElementById('mResultMeta').textContent=file.name+' · '+fmtBytes(file.size);
-        document.getElementById('mResultUrl').textContent=data.shareUrl;
-        document.getElementById('mResultUrl').dataset.url=data.shareUrl;
-        refreshDriveQuota();
-      } else { showToast(data.error||'Upload failed','error'); resetModalUpload(); }
-    } catch { showToast('Server error','error'); resetModalUpload(); }
+  chunkedUpload(file, hash, {
+    onProgress:(pct,bytesPerSec)=>{
+      document.getElementById('mProgFill').style.width=pct+'%';
+      document.getElementById('mProgPct').textContent=pct+'%';
+      document.getElementById('mProgSpeed').textContent=fmtBytes(bytesPerSec)+'/s';
+    },
+    onDone:(data)=>{
+      document.getElementById('modalProgCard').style.display='none';
+      document.getElementById('modalResultCard').style.display='block';
+      document.getElementById('mResultMeta').textContent=file.name+' · '+fmtBytes(file.size);
+      document.getElementById('mResultUrl').textContent=data.shareUrl;
+      document.getElementById('mResultUrl').dataset.url=data.shareUrl;
+      refreshDriveQuota();
+    },
+    onError:(msg)=>{ showToast(msg,'error'); resetModalUpload(); }
   });
-  xhr.addEventListener('error',()=>{ showToast('Network error','error'); resetModalUpload(); });
-  xhr.open('POST','/api/upload');
-  xhr.setRequestHeader('x-session-token',sessionToken);
-  xhr.send(formData);
 }
 
 function copyMResultUrl(){ navigator.clipboard.writeText(document.getElementById('mResultUrl').dataset.url||document.getElementById('mResultUrl').textContent); showToast('Link copied!','success'); }
@@ -937,44 +1004,39 @@ function startGuestUpload(file,hash){
     <div class="seed-row"><span class="seed-label">☁ Server storage</span><span class="seed-val accent" id="cloudStatus">Uploading...</span></div>
     <div class="seed-row"><span class="seed-label">🌍 Global delivery</span><span class="seed-val" id="p2pStatus" style="color:var(--muted)">Pending</span></div>
     <div class="seed-row"><span class="seed-label">🔗 Share link</span><span class="seed-val" id="linkStatus" style="color:var(--muted)">Generating...</span></div>`;
-  const formData=new FormData();
-  formData.append('file',file);formData.append('hash',hash);
-  const xhr=new XMLHttpRequest(); const t0=Date.now();
-  xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=Math.round(e.loaded/e.total*100); document.getElementById('progFill').style.width=pct+'%'; document.getElementById('progPct').textContent=pct+'%'; document.getElementById('progSpeed').textContent=fmtBytes(e.loaded/((Date.now()-t0)/1000))+'/s'; if(pct>5) document.getElementById('cloudStatus').textContent=pct+'% uploaded'; } });
-  xhr.addEventListener('load',()=>{
-    try {
-      const data=JSON.parse(xhr.responseText);
-      if(data.ok){
-        currentFileId=data.fileId;
-        document.getElementById('cloudStatus').textContent='✓ Stored';document.getElementById('cloudStatus').className='seed-val success';
-        document.getElementById('p2pStatus').textContent='✓ Ready';document.getElementById('p2pStatus').className='seed-val success';
-        document.getElementById('linkStatus').textContent='✓ Generated';document.getElementById('linkStatus').className='seed-val success';
-        cliCommands=data.commands;
-        setTimeout(()=>{
-          document.getElementById('uploadCard').classList.remove('active');
-          document.getElementById('resultCard').classList.add('active');
-          // Dynamic share URL — use the one returned by server (it uses request host)
-          document.getElementById('resultUrl').textContent=data.shareUrl;
-          document.getElementById('resultMeta').textContent=file.name+' · '+fmtBytes(file.size);
-          document.getElementById('dlBtn').href=data.shareUrl;
-          // Show or hide expiry banner
-          if(data.keepForever || keepForeverPref){
-            document.getElementById('expiryBanner').classList.add('hidden');
-          } else {
-            document.getElementById('expiryBanner').classList.remove('hidden');
-            document.getElementById('keepForeverBtn').textContent='Keep Forever';
-            document.getElementById('keepForeverBtn').classList.remove('done');
-          }
-          setCliTab('windows');
-          refreshQuota();
-        },800);
-      } else { showToast(data.error||'Upload failed','error'); resetAll(); }
-    } catch { showToast('Server error','error'); resetAll(); }
+
+  chunkedUpload(file, hash, {
+    onProgress:(pct,bytesPerSec)=>{
+      document.getElementById('progFill').style.width=pct+'%';
+      document.getElementById('progPct').textContent=pct+'%';
+      document.getElementById('progSpeed').textContent=fmtBytes(bytesPerSec)+'/s';
+      if(pct>5) document.getElementById('cloudStatus').textContent=pct+'% uploaded';
+    },
+    onDone:(data)=>{
+      currentFileId=data.fileId;
+      document.getElementById('cloudStatus').textContent='✓ Stored';document.getElementById('cloudStatus').className='seed-val success';
+      document.getElementById('p2pStatus').textContent='✓ Ready';document.getElementById('p2pStatus').className='seed-val success';
+      document.getElementById('linkStatus').textContent='✓ Generated';document.getElementById('linkStatus').className='seed-val success';
+      cliCommands=data.commands;
+      setTimeout(()=>{
+        document.getElementById('uploadCard').classList.remove('active');
+        document.getElementById('resultCard').classList.add('active');
+        document.getElementById('resultUrl').textContent=data.shareUrl;
+        document.getElementById('resultMeta').textContent=file.name+' · '+fmtBytes(file.size);
+        document.getElementById('dlBtn').href=data.shareUrl;
+        if(data.keepForever || keepForeverPref){
+          document.getElementById('expiryBanner').classList.add('hidden');
+        } else {
+          document.getElementById('expiryBanner').classList.remove('hidden');
+          document.getElementById('keepForeverBtn').textContent='Keep Forever';
+          document.getElementById('keepForeverBtn').classList.remove('done');
+        }
+        setCliTab('windows');
+        refreshQuota();
+      },800);
+    },
+    onError:(msg)=>{ showToast(msg,'error'); resetAll(); }
   });
-  xhr.addEventListener('error',()=>{ showToast('Network error','error'); resetAll(); });
-  xhr.open('POST','/api/upload');
-  if(sessionToken) xhr.setRequestHeader('x-session-token',sessionToken);
-  xhr.send(formData);
 }
 
 // ── KEEP FOREVER (after upload) ───────────────────────────────────────────────

@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const multer  = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { nanoid } = require('nanoid');
 const { OAuth2Client } = require('google-auth-library');
@@ -81,24 +80,27 @@ function getQuota(session, ip) {
   return { used: 0, max: Infinity, count: 0, maxFiles: Infinity, isGuest: true };
 }
 
-// ── Multer ────────────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename:    (req, file, cb) => { const id = uuidv4(); req.fileId = id; cb(null, id + path.extname(file.originalname)); }
-});
-const upload = multer({ storage }); // no global size limit — enforced per-tier below
+// ── Chunked, resumable uploads ────────────────────────────────────────────────
+// Files are sent in 8MB pieces instead of one giant request. If the network
+// drops or (on the Android app) the OS kills the app mid-upload, the client
+// resumes from the last completed piece — the server just needs to remember
+// which chunks it already has for a given uploadId, which chunkDir does.
+const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+const CHUNK_ROOT = 'uploads/chunks';
+if (!fs.existsSync(CHUNK_ROOT)) fs.mkdirSync(CHUNK_ROOT, { recursive: true });
+const uploadSessions = {}; // uploadId -> { chunkDir, originalname, mimetype, totalSize, hash, receivedChunks:Set, createdAt }
 
-// Reject oversized guest uploads early, before the body is even read, using
-// the declared Content-Length (browsers always send this for file uploads).
-function guestSizeGate(req, res, next) {
-  const session = getSession(req);
-  if (session) return next();
-  const len = parseInt(req.headers['content-length'] || '0', 10);
-  if (len > GUEST_FILE_CAP + 1_000_000) { // small slack for multipart overhead
-    return res.status(413).json({ ok:false, error:'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
+// Abandoned upload sessions (browser closed and never resumed) get swept up
+// alongside the hourly expired-file cleanup job.
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of Object.entries(uploadSessions)) {
+    if (now - s.createdAt > 24 * 60 * 60 * 1000) {
+      try { fs.rmSync(s.chunkDir, { recursive:true, force:true }); } catch {}
+      delete uploadSessions[id];
+    }
   }
-  next();
-}
+}, 60 * 60 * 1000);
 
 // ── MalwareBazaar ─────────────────────────────────────────────────────────────
 app.post('/api/malware-check', async (req, res) => {
@@ -369,18 +371,83 @@ function finalizeUpload({ req, filePath, originalname, size, mimetype, hash }, c
   cb(null, { fileId, shareId, name: originalname, size, shareUrl, rawUrl, commands, keepForever, expiresAt });
 }
 
-// ── Upload ────────────────────────────────────────────────────────────────────
-app.post('/api/upload', guestSizeGate, (req, res) => {
-  upload.single('file')(req, res, err => {
-    if (err) return res.status(400).json({ ok:false, error: err.message });
-    if (!req.file) return res.status(400).json({ ok:false, error:'No file received' });
-    finalizeUpload({
-      req, filePath: req.file.path, originalname: req.file.originalname,
-      size: req.file.size, mimetype: req.file.mimetype, hash: req.body.hash
-    }, (err, result) => {
-      if (err) return res.status(err.status).json({ ok:false, error: err.error });
-      res.json({ ok:true, ...result });
-    });
+// ── Chunked upload: init / chunk / status / complete ─────────────────────────
+app.post('/api/upload/init', express.json(), (req, res) => {
+  const session = getSession(req);
+  const { name, size, mimetype, hash } = req.body || {};
+  if (!name || !size) return res.status(400).json({ ok:false, error:'Missing file info.' });
+
+  if (!session && size > GUEST_FILE_CAP) {
+    return res.status(413).json({ ok:false, error:'Guests can upload up to 5GB per file. Sign in for 9TB total storage.' });
+  }
+  if (session) {
+    const quota = getQuota(session, req.ip);
+    if (quota.used + size > quota.max) {
+      return res.status(403).json({ ok:false, error:'You\'re out of storage. Delete some files, or create a new account for another free 9TB.' });
+    }
+  }
+
+  const uploadId = uuidv4();
+  const chunkDir = path.join(CHUNK_ROOT, uploadId);
+  fs.mkdirSync(chunkDir, { recursive: true });
+  uploadSessions[uploadId] = {
+    chunkDir, originalname: name, mimetype: mimetype || 'application/octet-stream',
+    totalSize: size, hash: hash || null, receivedChunks: new Set(), createdAt: Date.now()
+  };
+  res.json({ ok:true, uploadId, chunkSize: UPLOAD_CHUNK_SIZE });
+});
+
+app.post('/api/upload/chunk/:uploadId', (req, res) => {
+  const s = uploadSessions[req.params.uploadId];
+  if (!s) return res.status(404).json({ ok:false, error:'Upload session not found — please restart the upload.' });
+  const index = parseInt(req.query.index, 10);
+  if (isNaN(index)) return res.status(400).json({ ok:false, error:'Missing chunk index.' });
+
+  const chunkPath = path.join(s.chunkDir, String(index));
+  const writeStream = fs.createWriteStream(chunkPath);
+  req.pipe(writeStream);
+  req.on('error', () => { try { res.status(500).json({ ok:false, error:'Upload interrupted.' }); } catch {} });
+  writeStream.on('finish', () => { s.receivedChunks.add(index); res.json({ ok:true, received: index }); });
+  writeStream.on('error', () => res.status(500).json({ ok:false, error:'Failed to save chunk.' }));
+});
+
+app.get('/api/upload/status/:uploadId', (req, res) => {
+  const s = uploadSessions[req.params.uploadId];
+  if (!s) return res.status(404).json({ ok:false, error:'Upload session not found.' });
+  res.json({ ok:true, receivedChunks: Array.from(s.receivedChunks), totalSize: s.totalSize });
+});
+
+app.post('/api/upload/complete/:uploadId', async (req, res) => {
+  const s = uploadSessions[req.params.uploadId];
+  if (!s) return res.status(404).json({ ok:false, error:'Upload session not found.' });
+
+  const totalChunks = Math.ceil(s.totalSize / UPLOAD_CHUNK_SIZE);
+  for (let i = 0; i < totalChunks; i++) {
+    if (!s.receivedChunks.has(i)) return res.status(400).json({ ok:false, error:`Missing chunk ${i} — upload incomplete.` });
+  }
+
+  const tmpPath = path.join('uploads', 'tmp-' + req.params.uploadId);
+  await new Promise((resolve, reject) => {
+    const writeStream = fs.createWriteStream(tmpPath);
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+    (async () => {
+      for (let i = 0; i < totalChunks; i++) {
+        const data = fs.readFileSync(path.join(s.chunkDir, String(i)));
+        writeStream.write(data);
+      }
+      writeStream.end();
+    })();
+  });
+  try { fs.rmSync(s.chunkDir, { recursive:true, force:true }); } catch {}
+
+  finalizeUpload({
+    req, filePath: tmpPath, originalname: s.originalname,
+    size: s.totalSize, mimetype: s.mimetype, hash: s.hash
+  }, (err, result) => {
+    delete uploadSessions[req.params.uploadId];
+    if (err) return res.status(err.status).json({ ok:false, error: err.error });
+    res.json({ ok:true, ...result });
   });
 });
 
